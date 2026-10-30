@@ -23,6 +23,7 @@ mod dualsense;
 mod elevation;
 mod file_mapping;
 mod file_transfer;
+mod file_upload_inbox;
 mod fs_utils;
 mod gui_agent_exit;
 mod game_session;
