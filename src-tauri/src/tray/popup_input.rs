@@ -795,7 +795,7 @@ mod tests {
     fn streams_are_shown_with_megabits_and_an_unknown_rate_is_null() {
         let row = |name: &str, bitrate: u32| sunshine::SessionInfo {
             client_name: name.into(), client_address: String::new(), state: "RUNNING".into(), session_id: 1, width: 2560, height: 1440, fps: 120, bitrate,
-            host_audio: true, enable_hdr: false, enable_mic: false, app_name: "Desktop".into(), app_id: 1,
+            host_audio: true, enable_hdr: false, enable_mic: false,             app_name: "Desktop".into(), app_id: 1, client_uuid: String::new(),
         };
         let rows = session_rows(&[row("iPad", 48_200), row("Deck", 0)]);
         assert_eq!(rows[0]["bitrate"], json!(48.2));
