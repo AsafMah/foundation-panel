@@ -60,16 +60,60 @@ pub(crate) fn version_key(version: &str) -> Option<VersionKey> {
     Some(key)
 }
 
+/// Fork extension: the CI run of a fork release (`v<upstream base>.<run>.杂鱼`, AsafMah/foundation-sunshine), else 0. The fourth part counts
+/// only when it is 1..=6 digits ending the string or followed by `.` (or white space), so a short commit (7+ characters) never does. Same
+/// rule as `version_compare::fork_run` (host) and `forkRun` (Web UI); it orders only versions whose three-part keys are equal.
+pub(crate) fn fork_run(version: &str) -> u64 {
+    let mut text = version.trim_start_matches([' ', '\t', '\r', '\n']);
+    text = text.strip_prefix(['v', 'V']).unwrap_or(text);
+    let bytes = text.as_bytes();
+    if bytes.len() >= 7 && bytes[..7].eq_ignore_ascii_case(b"manual-") {
+        return 0;
+    }
+    let mut pos = 0;
+    for index in 0..3 {
+        let Some((_, next)) = read_number(bytes, pos, 0) else {
+            return 0;
+        };
+        pos = next;
+        if index < 2 {
+            if bytes.get(pos) != Some(&b'.') {
+                return 0;
+            }
+            pos += 1;
+        }
+    }
+    if bytes.get(pos) != Some(&b'.') {
+        return 0;
+    }
+    let start = pos + 1;
+    let Some((run, end)) = read_number(bytes, start, 0) else {
+        return 0;
+    };
+    if end - start > 6 {
+        return 0;
+    }
+    match bytes.get(end) {
+        None | Some(b'.' | b' ' | b'\t' | b'\r' | b'\n') => run,
+        _ => 0,
+    }
+}
+
+/// The ordering key of a version: its date key, then the fork run; `None` when it has no date version.
+pub(crate) fn version_order(version: &str) -> Option<(VersionKey, u64)> {
+    Some((version_key(version)?, fork_run(version)))
+}
+
 /// How `left` orders against `right`; `None` when either has no date version (unknown is never newer).
 #[cfg(test)]
 pub(crate) fn compare_versions(left: &str, right: &str) -> Option<Ordering> {
-    Some(version_key(left)?.cmp(&version_key(right)?))
+    Some(version_order(left)?.cmp(&version_order(right)?))
 }
 
 /// Whether `candidate` is a newer version than `installed`. An unreadable version on either side is no update.
 pub(crate) fn is_newer(installed: &str, candidate: &str) -> bool {
     matches!(
-        (version_key(installed), version_key(candidate)),
+        (version_order(installed), version_order(candidate)),
         (Some(installed), Some(candidate)) if candidate.cmp(&installed) == Ordering::Greater
     )
 }
@@ -124,6 +168,19 @@ mod tests {
             // `right` is an update for an installed `left` only when it is strictly newer, never when either is unknown
             assert_eq!(is_newer(left, right), want == Some(Ordering::Less));
         }
+    }
+
+    #[test]
+    fn fork_run_matches_the_fork_vectors() {
+        let table = vectors();
+        let rows = table["fork_run"].as_array().expect("fork_run vectors");
+        assert!(rows.len() >= 5);
+        for row in rows {
+            let input = row["input"].as_str().unwrap();
+            assert_eq!(fork_run(input), row["run"].as_u64().unwrap(), "{input:?}");
+        }
+        assert!(is_newer("v2026.1112.92926.20.杂鱼", "v2026.1112.92926.21.杂鱼"));
+        assert!(!is_newer("v2026.1112.92926.21.杂鱼", "v2026.1112.92926.杂鱼"));
     }
 
     #[test]

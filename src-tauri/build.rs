@@ -145,7 +145,32 @@ fn write_capability(commands: &[String]) {
 }
 
 /// Generates Tauri permissions and resources with constants from the shared compatibility contract.
+/// Release repository the updater follows. Official builds use AlkaidLab/foundation-sunshine with its metadata mirrors; a fork build sets
+/// FOUNDATION_RELEASE_REPOSITORY=<owner>/<repo> and then checks only that repository's GitHub releases (src/release_source.rs).
+fn emit_release_repository() {
+    println!("cargo:rerun-if-env-changed=FOUNDATION_RELEASE_REPOSITORY");
+    let configured = std::env::var("FOUNDATION_RELEASE_REPOSITORY").unwrap_or_default();
+    let configured = configured.trim();
+    let (owner, repo, fork) = if configured.is_empty() {
+        ("AlkaidLab".to_string(), "foundation-sunshine".to_string(), false)
+    } else {
+        let valid = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
+        match configured.split_once('/') {
+            Some((owner, repo)) if valid(owner) && valid(repo) => (owner.to_string(), repo.to_string(), true),
+            _ => panic!("FOUNDATION_RELEASE_REPOSITORY must be <owner>/<repo>, got {configured:?}"),
+        }
+    };
+    println!("cargo:rustc-env=SUNSHINE_RELEASE_OWNER={owner}");
+    println!("cargo:rustc-env=SUNSHINE_RELEASE_REPO={repo}");
+    println!("cargo:rustc-env=SUNSHINE_FORK_RELEASES={}", if fork { "1" } else { "0" });
+    println!("cargo::rustc-check-cfg=cfg(foundation_fork_release)");
+    if fork {
+        println!("cargo:rustc-cfg=foundation_fork_release");
+    }
+}
+
 fn main() {
+    emit_release_repository();
     println!("cargo:rerun-if-changed=component-compatibility.json");
     let compatibility: serde_json::Value = serde_json::from_str(
         &fs::read_to_string("component-compatibility.json")

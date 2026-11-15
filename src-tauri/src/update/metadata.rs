@@ -3,7 +3,6 @@
 //! The Panel keeps the release source policy here so the UI, tray entry point,
 //! startup check, and native update request all resolve the same candidates.
 
-use crate::version_compare::version_key;
 use futures_util::StreamExt;
 use regex::Regex;
 use reqwest::Url;
@@ -17,12 +16,9 @@ const METADATA_COM_URL: &str =
     "https://www.alkaidlab.com/release-metadata/foundation-sunshine.json";
 const METADATA_CN_URL: &str = "https://www.alkaidlab.cn/release-metadata/foundation-sunshine.json";
 const CNB_RELEASES_URL: &str = "https://cnb.cool/AlkaidLab/foundation-sunshine-release/-/releases";
-const GITHUB_LATEST_URL: &str =
-    "https://api.github.com/repos/AlkaidLab/foundation-sunshine/releases/latest";
-const GITHUB_RELEASES_URL: &str =
-    "https://api.github.com/repos/AlkaidLab/foundation-sunshine/releases?per_page=30";
-const GITHUB_OWNER: &str = "AlkaidLab";
-const GITHUB_REPOSITORY: &str = "foundation-sunshine";
+use crate::release_source::{
+    GITHUB_LATEST_URL, GITHUB_RELEASES_URL, OWNER as GITHUB_OWNER, REPOSITORY as GITHUB_REPOSITORY,
+};
 const MAX_METADATA_BYTES: usize = 1024 * 1024;
 const MAX_RELEASE_NOTES_BYTES: usize = 128 * 1024;
 const METADATA_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -368,7 +364,7 @@ fn classify_asset_name(name: &str) -> Option<&'static str> {
 }
 
 fn encoded_release_page(tag: &str) -> String {
-    let mut url = Url::parse("https://github.com/AlkaidLab/foundation-sunshine/releases/tag")
+    let mut url = Url::parse(crate::release_source::GITHUB_RELEASE_TAG_BASE)
         .expect("built-in GitHub release URL must be valid");
     url.path_segments_mut()
         .expect("GitHub release URL must be a base URL")
@@ -377,7 +373,7 @@ fn encoded_release_page(tag: &str) -> String {
 }
 
 fn encoded_download_url(tag: &str, name: &str) -> String {
-    let mut url = Url::parse("https://github.com/AlkaidLab/foundation-sunshine/releases/download")
+    let mut url = Url::parse(crate::release_source::GITHUB_RELEASE_DOWNLOAD_BASE)
         .expect("built-in GitHub download URL must be valid");
     url.path_segments_mut()
         .expect("GitHub download URL must be a base URL")
@@ -614,8 +610,8 @@ pub(crate) fn compare_candidates(left: &ReleaseCandidate, right: &ReleaseCandida
         return left_time.cmp(right_time);
     }
     // the date part only (.杂鱼, a commit and any other suffix do not count); an unreadable version sorts below a readable one
-    version_key(&left.version)
-        .cmp(&version_key(&right.version))
+    crate::version_compare::version_order(&left.version)
+        .cmp(&crate::version_compare::version_order(&right.version))
         .then_with(|| match (left.prerelease, right.prerelease) {
             (false, true) => Ordering::Greater,
             (true, false) => Ordering::Less,
@@ -956,6 +952,10 @@ async fn ensure_channel_candidates(
 }
 
 pub(crate) async fn resolve_catalog(channel: UpdateChannel) -> Result<ReleaseCatalog, String> {
+    // A fork build follows only its own GitHub releases: the metadata mirrors and CNB describe official builds.
+    if crate::release_source::FORK {
+        return fetch_github_catalog(channel).await;
+    }
     if current_locale_is_chinese().await {
         let overall_deadline = Instant::now() + METADATA_OVERALL_TIMEOUT;
         // One host first, the mirror only when it failed: a check is one request, not two.
@@ -1027,6 +1027,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(foundation_fork_release, ignore = "official metadata/CNB channel; fork builds read only their GitHub releases")]
     fn parses_metadata_and_ignores_unknown_assets() {
         let catalog = parse_metadata(&metadata_json()).unwrap();
         assert_eq!(catalog.latest.as_ref().unwrap().assets.len(), 1);
@@ -1035,6 +1036,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(foundation_fork_release, ignore = "official metadata/CNB channel; fork builds read only their GitHub releases")]
     fn test_channel_picks_newer_stable_release_when_pre_is_older() {
         let catalog = parse_metadata(&metadata_json()).unwrap();
         let selected = select_candidate(&catalog, UpdateChannel::StableAndPrerelease).unwrap();
@@ -1042,6 +1044,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(foundation_fork_release, ignore = "official metadata/CNB channel; fork builds read only their GitHub releases")]
     fn test_channel_picks_newer_prerelease_when_it_is_newer() {
         let mut catalog = parse_metadata(&metadata_json()).unwrap();
         catalog.pre_latest.as_mut().unwrap().version = "v2026.930.010000.杂鱼".to_string();
@@ -1051,6 +1054,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(foundation_fork_release, ignore = "official metadata/CNB channel; fork builds read only their GitHub releases")]
     fn test_channel_uses_release_identity_when_numeric_versions_are_equal() {
         let mut catalog = parse_metadata(&metadata_json()).unwrap();
         catalog.pre_latest.as_mut().unwrap().version = "v2026.925.152547.beta".to_string();
@@ -1060,6 +1064,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(foundation_fork_release, ignore = "official metadata/CNB channel; fork builds read only their GitHub releases")]
     fn release_notes_are_trimmed_and_bounded_on_utf8_boundaries() {
         let mut body: serde_json::Value = serde_json::from_slice(&metadata_json()).unwrap();
         body["channels"]["latest"]["releaseNotes"] =

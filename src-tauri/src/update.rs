@@ -1336,6 +1336,9 @@ pub async fn update_mirrorchyan_check(
     current_version: String,
     channel: String,
 ) -> serde_json::Value {
+    if crate::release_source::FORK {
+        return serde_json::json!({ "ok": false, "error": "Mirror酱 distributes official builds only; this fork build updates from GitHub" });
+    }
     let current_version: String = current_version.chars().take(128).collect();
     let channel = mirrorchyan::normalize_channel(&channel);
     let cdk = read_stored_cdk().await;
@@ -1621,8 +1624,13 @@ fn validate_download_url(url: &str, expected_filename: Option<&str>) -> Result<(
         return Err("下载地址必须是无凭据的 HTTPS 地址".to_string());
     }
     let expected_prefix: &[&str] = match parsed.host_str() {
-        Some("github.com") => &["AlkaidLab", "foundation-sunshine", "releases", "download"],
-        Some("cnb.cool") => &[
+        Some("github.com") => &[
+            crate::release_source::OWNER,
+            crate::release_source::REPOSITORY,
+            "releases",
+            "download",
+        ],
+        Some("cnb.cool") if !crate::release_source::FORK => &[
             "AlkaidLab",
             "foundation-sunshine-release",
             "-",
@@ -1879,6 +1887,10 @@ fn download_candidates(
 async fn mirror_download_candidate(
     app_handle: &AppHandle,
 ) -> Option<github_download::DownloadCandidate> {
+    // Mirror酱 distributes official builds only.
+    if crate::release_source::FORK {
+        return None;
+    }
     let cdk = read_stored_cdk().await?;
     let current_version = get_current_sunshine_version()
         .await
@@ -2273,46 +2285,45 @@ mod download_source_tests {
 
     #[test]
     fn download_url_requires_an_allowlisted_foundation_release_host() {
-        assert!(
+        let repo = format!("{}/{}", crate::release_source::OWNER, crate::release_source::REPOSITORY);
+        let github = format!("https://github.com/{repo}/releases/download/v1/setup.exe");
+        assert!(validate_download_url(&github, None).is_ok());
+        // CNB carries official builds only; a fork build must not accept it.
+        assert_eq!(
             validate_download_url(
-                "https://github.com/AlkaidLab/foundation-sunshine/releases/download/v1/setup.exe",
+                "https://cnb.cool/AlkaidLab/foundation-sunshine-release/-/releases/download/v1/setup.exe",
                 None,
             )
-            .is_ok()
+            .is_ok(),
+            !crate::release_source::FORK
         );
-        assert!(validate_download_url(
-            "https://cnb.cool/AlkaidLab/foundation-sunshine-release/-/releases/download/v1/setup.exe",
-            None,
-        )
-        .is_ok());
 
         for invalid_url in [
-            "http://github.com/AlkaidLab/foundation-sunshine/releases/download/v1/setup.exe",
-            "https://github.com.example.invalid/AlkaidLab/foundation-sunshine/releases/download/v1/setup.exe",
-            "https://github.com/AlkaidLab/other/releases/download/v1/setup.exe",
-            "https://user:secret@github.com/AlkaidLab/foundation-sunshine/releases/download/v1/setup.exe",
-            "not a url",
+            format!("http://github.com/{repo}/releases/download/v1/setup.exe"),
+            format!("https://github.com.example.invalid/{repo}/releases/download/v1/setup.exe"),
+            format!("https://github.com/{}/other/releases/download/v1/setup.exe", crate::release_source::OWNER),
+            format!("https://user:secret@github.com/{repo}/releases/download/v1/setup.exe"),
+            "not a url".to_string(),
         ] {
             assert!(
-                validate_download_url(invalid_url, None).is_err(),
+                validate_download_url(&invalid_url, None).is_err(),
                 "unexpectedly accepted {invalid_url}"
             );
         }
-
-        assert!(
-            validate_download_url(
+        if crate::release_source::FORK {
+            assert!(validate_download_url(
                 "https://github.com/AlkaidLab/foundation-sunshine/releases/download/v1/setup.exe",
-                Some("setup.exe"),
+                None,
             )
-            .is_ok()
-        );
-        assert!(
-            validate_download_url(
-                "https://github.com/AlkaidLab/foundation-sunshine/releases/download/v1/other.exe",
-                Some("setup.exe"),
-            )
-            .is_err()
-        );
+            .is_err());
+        }
+
+        assert!(validate_download_url(&github, Some("setup.exe")).is_ok());
+        assert!(validate_download_url(
+            &format!("https://github.com/{repo}/releases/download/v1/other.exe"),
+            Some("setup.exe"),
+        )
+        .is_err());
     }
 
     #[test]
