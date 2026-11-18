@@ -26,6 +26,25 @@ permissions:
   contents: read
 
 jobs:
+  build-linux:
+    name: Build Linux (locked Dev Container)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the development image
+        run: docker build --platform=linux/amd64 --file .devcontainer/Dockerfile --tag foundation-panel-dev:20261117 .
+      - name: Setup, check, build and test with the shared entry points
+        run: |
+          mkdir -p "$RUNNER_TEMP/panel-cache/tmp"
+          docker run --platform=linux/amd64 --rm --init \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspaces/panel" \
+            --mount "type=bind,source=$RUNNER_TEMP/panel-cache,target=/workspaces/.cache" \
+            --workdir /workspaces/panel \
+            --env CARGO_BUILD_JOBS=2 \
+            --env CARGO_HOME=/workspaces/.cache/cargo \
+            foundation-panel-dev:20261117 \
+            sh -eu -c 'just setup && just doctor && just build && just test'
+
   build-windows:
     name: Build Windows (x64)
     runs-on: windows-latest
@@ -39,16 +58,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7.1.0
+      # dev-env-mise-action: version and install; dev-env-msvc-action: environment activation.
+      - name: Select locked tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db  # v3.6.3
         with:
-          node-version: 24.21.0
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
+          version: 2026.11.9
+      - name: Activate MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1.13.0
 
       # Cache compiler outputs without restoring Cargo's target directory. This
       # avoids the stale Tauri proc-macro fingerprints previously seen with a
@@ -56,15 +72,8 @@ jobs:
       - name: Setup Rust compiler cache
         uses: mozilla-actions/sccache-action@v0.0.11
 
-      # The panel imports foundation-ui from a sibling checkout named ds5-ui-m3e (package.json: "file:../ds5-ui-m3e").
-      - name: Fetch foundation-ui
-        shell: bash
-        run: |
-          git clone --depth 1 https://github.com/AlkaidLab/foundation-ui "$GITHUB_WORKSPACE/../ds5-ui-m3e"
-          npm ci --prefix "$GITHUB_WORKSPACE/../ds5-ui-m3e"
-
-      - name: Install npm dependencies
-        run: npm ci
+      - name: Setup with the contributor entry point
+        run: just setup
 
       - name: Inject version from tag
         shell: bash
@@ -98,13 +107,42 @@ jobs:
           # Built-in native tool plugin
           sed -i '0,/^version = ".*"/s//version = "'"$VERSION"'"/' native-plugins/stylus/Cargo.toml
 
+          # The injected version is the workspace member's own entry in each Cargo.lock. Refresh only that entry
+          # (dependencies stay locked) so the --locked builds below accept it.
+          cargo update --workspace --manifest-path src-tauri/Cargo.toml
+          cargo update --workspace --manifest-path native-plugins/Cargo.toml
+
           echo "Version injected into GUI and native plugin manifests"
 
       - name: Build frontend
-        run: npm run build:renderer
+        run: just build
+
+      - name: Test environment diagnostics
+        run: node --test scripts/dev-env.test.mjs
 
       - name: Test renderer logic
         run: npm run test:renderer
+
+      - name: USB-IP ownership registry and layout fixtures (Debug)
+        shell: powershell
+        env:
+          RUSTC_WRAPPER: ''
+        run: |
+          $contract = Get-Content -Raw src-tauri/component-compatibility.json | ConvertFrom-Json
+          $file = Join-Path $env:RUNNER_TEMP 'usbip-legacy-fixture.exe'
+          Invoke-WebRequest -UseBasicParsing $contract.usbip.installer_url -OutFile $file
+          if ((Get-FileHash -Algorithm SHA256 $file).Hash -ne $contract.usbip.installer_sha256) { throw 'Legacy fixture hash mismatch' }
+          $env:USBIP_LEGACY_FIXTURE_INSTALLER = $file
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc usbip:: -- --nocapture
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Save read-only transport test binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: usbip-debug-probe
+          path: src-tauri/target/x86_64-pc-windows-msvc/debug/**/sunshine_gui-*.exe
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Build native tool plugins
         shell: pwsh
@@ -124,6 +162,13 @@ jobs:
           --skip tray::events::tests::event_stream_handshake_times_out_after_tcp_connect
           --skip usbip::signature::tests::a_signed_system_file_reads_as_signed
           --skip usbip::signature::tests::an_unsigned_script_and_a_missing_file_are_not_called_signed
+
+      # The tests above compile the test configuration, in which some functions exist that the release build does not have (a function under
+      # #[cfg(test)] used by production code passed every PR check and broke the release build). A pull request has no release build, so
+      # type-check the release configuration here: it compiles every crate like the release build does, without generating code.
+      - name: Check the release configuration compiles
+        if: github.event_name == 'pull_request'
+        run: cargo check --manifest-path src-tauri/Cargo.toml --release --bins --target x86_64-pc-windows-msvc
 
       - name: Build Tauri (release)
         if: github.event_name != 'pull_request'
@@ -172,12 +217,35 @@ jobs:
             Write-Host "$($_.Name): $([math]::Round($_.Length / 1MB, 2)) MB"
           }
 
+          # Executable size, raw and compressed, in bytes (to follow the package size from build to build)
+          $exe = Get-Item "$outDir/sunshine-gui.exe"
+          $packed = Join-Path $env:RUNNER_TEMP 'sunshine-gui.exe.zip'
+          Compress-Archive -Path $exe.FullName -DestinationPath $packed -CompressionLevel Optimal -Force
+          $line = "sunshine-gui.exe: $($exe.Length) bytes, $((Get-Item $packed).Length) bytes zipped"
+          Write-Host $line
+          "- $line" >> $env:GITHUB_STEP_SUMMARY
+
+          # The symbols for decoding crash reports stay outside the release package
+          $pdb = Get-ChildItem $targetDir -Filter '*.pdb' | Where-Object { $_.Name -like 'sunshine*gui*.pdb' } | Select-Object -First 1
+          if (-not $pdb) { throw "The release build wrote no PDB: crash reports could not be decoded" }
+          New-Item -ItemType Directory -Force -Path symbols | Out-Null
+          Copy-Item $pdb.FullName "symbols/"
+
       - name: Upload artifacts
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: sunshine-gui-windows-x64
           path: artifacts/*
+          if-no-files-found: error
+
+      - name: Upload symbols
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sunshine-gui-symbols
+          path: symbols/*
+          retention-days: 90
           if-no-files-found: error
 
   release:
@@ -189,6 +257,13 @@ jobs:
       contents: write
 
     steps:
+      # The release text lives in the repository: .github/release-notes/<tag>.md
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/release-notes
+          sparse-checkout-cone-mode: false
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -204,12 +279,20 @@ jobs:
             echo "tag=v$(date +%Y.%m%d.%H%M%S)" >> "$GITHUB_OUTPUT"
           fi
 
+      # The notes file of the tag is the body of the release; a tag without one gets the generated notes.
+      - name: Find release notes
+        id: notes
+        run: |
+          file=".github/release-notes/${{ steps.version.outputs.tag }}.md"
+          if [ -s "$file" ]; then echo "path=$file" >> "$GITHUB_OUTPUT"; else echo "path=" >> "$GITHUB_OUTPUT"; fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Sunshine GUI ${{ steps.version.outputs.tag }}
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: ${{ steps.notes.outputs.path == '' }}
           files: artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

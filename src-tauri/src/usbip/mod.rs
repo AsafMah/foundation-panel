@@ -63,6 +63,9 @@ pub struct UsbipStatus {
     pub error_code: String,
     pub attached_devices: Vec<UsbipAttachedDevice>,
     pub detail: String,
+    pub externally_managed: bool,
+    /// An external installation the person may ask to replace with the host's own package (host `status`).
+    pub replaceable: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -70,6 +73,8 @@ pub struct UsbipStatus {
 enum ElevatedRequest {
     Install,
     Cleanup,
+    /// The person confirmed replacing an external USB/IP installation with the host's package.
+    ReplaceLegacy,
     Attach {
         remote: String,
         tcp_port: u16,
@@ -90,6 +95,8 @@ impl ElevatedRequest {
             // The silent uninstaller plus the devnode sweep stay well below a
             // single Inno install, but leave headroom for slow driver teardown.
             Self::Cleanup => std::time::Duration::from_secs(15 * 60),
+            // The host's helper allows its uninstall and install ten minutes in total; leave the same headroom.
+            Self::ReplaceLegacy => std::time::Duration::from_secs(15 * 60),
             Self::Attach { .. } | Self::Detach { .. } => {
                 COMMAND_TIMEOUT + std::time::Duration::from_secs(5)
             }
@@ -195,6 +202,18 @@ mod tests {
     }
 
     #[test]
+    fn replace_request_has_its_own_allowlisted_operation() {
+        let encoded = serde_json::to_string(&ElevatedRequest::ReplaceLegacy).unwrap();
+        assert_eq!(encoded, r#"{"operation":"replace_legacy"}"#);
+        assert!(matches!(
+            serde_json::from_str::<ElevatedRequest>(&encoded),
+            Ok(ElevatedRequest::ReplaceLegacy)
+        ));
+        // Cleanup of an external installation stays refused; the replacement is a different, confirmed operation.
+        assert!(serde_json::from_str::<ElevatedRequest>(r#"{"operation":"replace"}"#).is_err());
+    }
+
+    #[test]
     fn validates_usbip_win2_tcp_port_range() {
         assert_eq!(validate_tcp_port(None).unwrap(), DEFAULT_TCP_PORT);
         assert!(validate_tcp_port(Some(1023)).is_err());
@@ -210,6 +229,12 @@ mod tests {
         assert!(status.installed);
         assert!(status.version_valid);
         assert!(status.ready, "{}", status.detail);
+        println!("USB/IP installed status: {status:?}");
+        if std::env::var("USBIP_EXPECT_EXTERNAL").as_deref() == Ok("1") {
+            assert!(status.externally_managed);
+            let error = device::cleanup_broken_transport().await.unwrap_err();
+            assert!(error.starts_with("USBIP-CLEAN-005:"), "{error}");
+        }
     }
 
     #[cfg(target_os = "windows")]

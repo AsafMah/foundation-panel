@@ -48,6 +48,28 @@ pub async fn usbip_cleanup_transport() -> Result<UsbipStatus, String> {
     super::status::usbip_get_status().await
 }
 
+/// Replaces an external, fully installed usbip-win2 with the host's package after the person confirmed it. The host's
+/// helper decides again whether the installation may be replaced; this side only refuses what it can see is unsafe.
+#[tauri::command]
+pub async fn usbip_replace_legacy_transport() -> Result<UsbipStatus, String> {
+    let _guard = OPERATION_LOCK.lock().await;
+    let before = super::status::usbip_get_status().await?;
+    if !before.replaceable {
+        return Err("USBIP-REPLACE-001: this USB/IP installation cannot be replaced from here; nothing was changed".to_string());
+    }
+    if !before.attached_devices.is_empty() {
+        return Err(
+            "USBIP-REPLACE-005: detach the attached USB devices first; nothing was changed"
+                .to_string(),
+        );
+    }
+    let response = run_elevated(ElevatedRequest::ReplaceLegacy).await?;
+    let reboot_recommended = response.message == "reboot_recommended";
+    let mut status = super::status::usbip_get_status().await?;
+    status.reboot_recommended = reboot_recommended;
+    Ok(status)
+}
+
 #[tauri::command]
 pub async fn usbip_attach(
     remote: String,

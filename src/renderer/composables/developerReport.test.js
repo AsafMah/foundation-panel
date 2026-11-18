@@ -14,6 +14,12 @@ test('the panel registers openUrl for the report and sign-in sheets, and it is t
   assert.match(src, /import \{[^}]*openExternalUrl[^}]*\} from '\.\.\/tauri-adapter\.js'/)
 })
 
+test('the panel tells the feedback sheet that its host takes a screenshot, and the capture it gives is the native window capture', () => {
+  const src = readFileSync(new URL('./developerReport.js', import.meta.url), 'utf8')
+  assert.match(src, /registerDevReport\(\{[\s\S]*shots: true/)
+  assert.match(src, /capture: async \(\) => bytesOfBase64\(await invoke\('dev_capture_window'\)\)/)
+})
+
 test('the device page goes to the native opener and its answer is the sheet\'s: true opened, false could not', async () => {
   assert.equal(await openExternalUrl('https://github.com/login/device'), true)
   assert.deepEqual(calls.at(-1), ['open_external_url', { url: 'https://github.com/login/device' }])

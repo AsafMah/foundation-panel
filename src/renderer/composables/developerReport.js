@@ -40,7 +40,9 @@ export function registerPanelReport({ locale, version, errorContext, hostNames =
     },
     // the sign-in sheet's button opens github.com/login/device through the native side (the system browser, also from an elevated panel); it answers false when it could not, and the sheet then says what to do by hand
     openUrl: (url) => openExternalUrl(url),
-    // the report sheet sends privately to the developers (a user_report event through the host) or saves the zip
+    // the report sheet sends privately to the developers (a user_report event through the host) or saves the zip. The host takes a screenshot with the report (uploads it like the run log), so the sheet
+    // offers one: the capture above (covered before the sheet exists, 重新截取 takes it again) or a picture chosen or pasted (a window of this panel does not get HTML drops: the native side owns file drops).
+    shots: true,
     product: 'panel',
   })
 }

@@ -4,6 +4,7 @@ import { firstImage, micIsReady, padIsReady, MPage, MIcon, MIconButton, MDialog,
 import { buildCatalogue, buildCatalogueDetails, useJourneyHome, useReleaseAssets, useStarCard, useSessionClock, useSystemInfo, reachProblemOf, registeredComponentStatus, createHistory, createHttpVddAdapter, createPairQr, createVddStore, saveSettingKey, vddStatusOf, recentKeys, rememberRecent, isLoopbackHost, createQueuedCalls, createSerialCalls } from 'foundation-ui/vue'
 import QRCode from 'qrcode'
 import { qrSvgDataUrl } from '../composables/qrSvg.js'
+import { audioDevicesChannel } from '../composables/deviceStatusStore.js'
 import { usePanelHome, seen, SETTLE_CAP_MS } from '../composables/usePanelHome.js'
 import { useHostReach } from '../composables/useHostReach.js'
 import { useGamepadType } from '../composables/useGamepadType.js'
@@ -12,6 +13,7 @@ import { openExternalUrl, sunshine, vdd as vddApi, virtualMicrophone } from '../
 import { hostBase, hostFetch } from '../composables/hostBase.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import { openBigScreenWithNotice } from '../composables/openBigScreen.js'
+import { pipelineAverages, perfExtras } from '../composables/liveSession.js'
 
 const props = defineProps({
   runtime: { type: Object, required: true },
@@ -77,7 +79,7 @@ const model = computed(() => {
   } : null
   const base = buildHomeModel({
     host: { name: state.config?.sunshine_name || 'Sunshine', version: state.version, uptimeMs: uptimeMs.value, running: state.loaded, update: props.updateAvailable ? h.value.update : '' },
-    session: s ? { ...s, fpsMeasured: perfSession.value?.frame_rates?.encoded?.fps ?? perfSession.value?.host_latency?.recent_fps, latencyMs: perfSession.value?.host_latency?.avg_ms } : null,
+    session: s ? { ...s, fpsMeasured: perfSession.value?.frame_rates?.encoded?.fps ?? perfSession.value?.host_latency?.recent_fps, latencyMs: perfSession.value?.host_latency?.avg_ms, ...pipelineAverages(perfSession.value) } : null,
     series: state.series, sys, encoder: state.config?.active_encoder || '',
     codecModes: state.config && state.config.hevc_mode !== undefined ? { hevc: state.config.hevc_mode, av1: state.config.av1_mode } : null,
     pads: { text: [modeLabel.value, dsLabel.value].filter(Boolean).join(' · ') || '–', word: dsLabel.value || modeLabel.value, ready: padIsReady(props.runtime.ds?.state) },
@@ -137,14 +139,15 @@ const catalogueInput = computed(() => {
   const p = perfSession.value
   return {
     sampleSec: SAMPLE_SEC, vddStore: state.vdd && state.vdd.installed !== false ? vddStore : null,
-    reach: hostReach.view.report, reachChecking: hostReach.view.status === 'loading',
+    reach: hostReach.view.report, reachChecking: hostReach.view.status === 'loading', reachStatus: hostReach.view.status, reachCause: hostReach.view.cause, reachHttp: hostReach.view.http,
     sysinfo: nics.info.value,
+    mic: props.runtime.mic,
     host: { version: state.version, update: props.updateAvailable ? h.value.update : '' },
-    session: s ? { ...s, fpsMeasured: p?.frame_rates?.encoded?.fps, latencyMs: p?.host_latency?.avg_ms, latencyP95Ms: p?.host_latency?.p95_ms, uptimeMs: sessionClock.uptimeMs.value ?? p?.uptime_ms ?? s.uptimeMs } : null,
+    session: s ? { ...s, fpsMeasured: p?.frame_rates?.encoded?.fps, latencyMs: p?.host_latency?.avg_ms, latencyP95Ms: p?.host_latency?.p95_ms, ...pipelineAverages(p), ...perfExtras(p), uptimeMs: sessionClock.uptimeMs.value ?? p?.uptime_ms ?? s.uptimeMs } : null,
     history: { samples: history.samples, sessions: history.sessions, days: history.days, last: () => history.last() },
     sys: model.value.info.some((i) => i.id === 'memory') && state.memory ? { memTotal: state.memory.system_total_memory, memAvail: state.memory.system_available_memory } : null,
     recent: recentKeys.value, canRuntime: canRuntime.value, ds5Keys: ds5Keys.value,
-    config: state.config, logText: state.logText, logs: state.errorLog, clients: state.clients ? state.clients.map((c) => ({ ...c, icon: 'devices' })) : null,
+    config: state.config, audio: audioDevicesChannel.data.value?.render || null, logText: state.logText, logs: state.errorLog, clients: state.clients ? state.clients.map((c) => ({ ...c, icon: 'devices' })) : null,
     apps: state.apps ? state.apps.map((a) => ({ id: a.name, name: a.name, cover: coverOf(a) })) : null,
     codecModes: state.config && state.config.hevc_mode !== undefined ? { hevc: state.config.hevc_mode, av1: state.config.av1_mode } : null,
     pads: { text: [modeLabel.value, dsLabel.value].filter(Boolean).join(' · ') || '–' }, usb: props.runtime.usb?.attached_devices ? props.runtime.usb.attached_devices.length : null,

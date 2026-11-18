@@ -301,16 +301,41 @@ fn set_toolbar_window_expanded_internal<R: Runtime>(
     let target_position =
         clamp_tool_window_position(window, target_position, target_logical, target_logical);
 
-    window
-        .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
-            expected_size,
-            expected_size,
-        )))
-        .map_err(|e| e.to_string())?;
-    window
-        .set_position(target_position)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    #[cfg(target_os = "windows")]
+    {
+        use ::windows::Win32::Foundation::HWND;
+        use ::windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+        };
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        // Move and resize together so the centered pet cannot jump between frames.
+        return unsafe {
+            SetWindowPos(
+                HWND(hwnd.0),
+                None,
+                target_position.x,
+                target_position.y,
+                expected_size as i32,
+                expected_size as i32,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
+            )
+        }
+        .map_err(|e| e.to_string());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        window
+            .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+                expected_size,
+                expected_size,
+            )))
+            .map_err(|e| e.to_string())?;
+        window
+            .set_position(target_position)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 #[tauri::command]

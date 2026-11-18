@@ -9,6 +9,7 @@ mod client_fingerprint_rules;
 mod clipboard;
 mod clipboard_files;
 mod release_source;
+mod clipboard_health;
 mod commands;
 mod crash;
 mod controller_hub;
@@ -98,6 +99,8 @@ fn configure_async_runtime() {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(worker_threads)
             .thread_name("sunshine-gui-worker")
+            // 2 MiB is tokio's default: the TLS and HTTP calls of the agent run deep, and two stack overflows of the first release came from worker threads
+            .thread_stack_size(8 * 1024 * 1024)
             .enable_all()
             .build()
             .expect("failed to create the Sunshine GUI async runtime")
@@ -229,6 +232,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::toggle_dark_mode,
+            commands::crash_recovered_ask,
+            commands::crash_recovered_answered,
             toolbar::handle_toolbar_menu_action,
             toolbar::save_toolbar_position,
             toolbar::is_primary_mouse_button_pressed,
@@ -341,6 +346,7 @@ fn main() {
             usbip::usbip_save_forwarding_config,
             usbip::usbip_install_transport,
             usbip::usbip_cleanup_transport,
+            usbip::usbip_replace_legacy_transport,
             usbip::usbip_list_remote,
             usbip::usbip_attach,
             usbip::usbip_detach,
@@ -366,6 +372,8 @@ fn main() {
             update::update_cdk_clear,
             update::update_mirrorchyan_check,
             update::set_update_source,
+            update::get_update_source_used,
+            update::get_update_source_miss,
             update::download_update,
             update::download_update_status,
             update::check_cached_update,

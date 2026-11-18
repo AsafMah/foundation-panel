@@ -22,6 +22,17 @@
     @go="goPlace"
   >
     <template #tools>
+      <MSection :title="clipTexts.title" data-panel-section="clipboard-sync">
+        <MGroup>
+          <MItem icon="content_paste" :title="clipFirst.title" :value="clipFirst.text">
+            <template #trail>
+              <MChip :tone="clipView.tone">{{ clipView.label }}</MChip>
+              <MButton variant="tonal" icon="refresh" :loading="clipLoading" @click="refreshClipboard">{{ clipTexts.refresh }}</MButton>
+            </template>
+          </MItem>
+          <MItem v-for="row in clipView.rows.slice(1)" :key="row.id" :title="row.title" :value="row.text" />
+        </MGroup>
+      </MSection>
       <MSection :title="logText.title">
         <MGroup>
           <MButton variant="tonal" icon="refresh" :loading="refreshing" @click="refreshLogs">{{ logText.refresh }}</MButton>
@@ -42,9 +53,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { MDiagnostics, MDialog, MButton, diagnosticsTexts, guideTexts, coachTexts, remoteTexts, MGroup, MSection, useDialogs, useNotify } from 'foundation-ui/vue'
+import { MDiagnostics, MDialog, MButton, MChip, MItem, diagnosticsTexts, guideTexts, coachTexts, remoteTexts, MGroup, MSection, useDialogs, useNotify } from 'foundation-ui/vue'
+import { clipboardBundleFacts, clipboardStatusView } from '../../composables/clipboardStatusView.js'
 import { useDiagnostics } from '../../composables/useDiagnostics.js'
 import { exportPanelLogs } from '../../composables/panelLogExport.js'
 import { useLogDiagnosis } from '../../composables/useLogDiagnosis.js'
@@ -62,7 +74,27 @@ const say = (text) => useNotify().snack(text)
 const texts = computed(() => diagnosticsTexts(locale.value))
 
 const data = (r) => (r?.success ? r.data : null)
+// the clipboard sync agent: its status as the page shows it, and as the diagnostics bundle carries it (words, counts and times; never the text of an error)
+const clipTexts = computed(() => t.value.clipboardSync.diag)
+const clipStatus = ref(null)
+const clipLoading = ref(false)
+const clipView = computed(() => clipboardStatusView(clipStatus.value, clipTexts.value))
+// the first row carries the chip and the refresh button: the local agent's state; with no answer yet it only says what the section is
+const clipFirst = computed(() => clipView.value.rows[0] || { title: clipTexts.value.agent, text: '' })
+// a slow answer must not overwrite a newer one: each call takes a number and only the latest call may write
+let clipSeq = 0
+async function refreshClipboard() {
+  const mine = ++clipSeq
+  clipLoading.value = true
+  let next = null
+  try { next = await invoke('clipboard_sync_status') } catch { next = null }
+  if (mine !== clipSeq) return
+  clipStatus.value = next
+  clipLoading.value = false
+}
+let clipTimer = 0
 const devices = async () => {
+  const clipboard = clipboardBundleFacts(await invoke('clipboard_sync_status').catch(() => null))
   const [usb, ds, mic, vigem] = await Promise.all([usbipStatusChannel, dualsenseStatusChannel, micStatusChannel, vigemStatusChannel].map((c) => c.fetch({ force: false }).catch(() => null)))
   const pick = (o, keys) => (o ? Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]])) : null)
   return {
@@ -70,6 +102,7 @@ const devices = async () => {
     dualsense: pick(data(ds), ['state', 'host']),
     microphone: pick(data(mic), ['configured_backend', 'active_backend', 'component_available', 'state']),
     vigem: pick(data(vigem), ['installed', 'version']),
+    clipboard,
   }
 }
 const diag = useDiagnostics({ devices })
@@ -184,5 +217,6 @@ async function clearLogs() {
 async function exportLogs(format) {
   await exportPanelLogs({ invoke, format, texts: logText.value, alert: useDialogs().alert })
 }
-onMounted(() => { diag.loadFacts(); diag.start() })
+onMounted(() => { diag.loadFacts(); diag.start(); void refreshClipboard(); clipTimer = window.setInterval(refreshClipboard, 5000) })
+onBeforeUnmount(() => { window.clearInterval(clipTimer) })
 </script>

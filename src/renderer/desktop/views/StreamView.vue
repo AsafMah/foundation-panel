@@ -19,7 +19,7 @@
       <!-- the same rows as the Web UI and the phone: the bitrate is one row with the shared control (value, steps, slider, chips) -->
       <MSection>
         <MGroup>
-          <MItem class="dsk-bitrate" icon="monitoring" :title="t.stream.bitrateLimit" :text="applies('max_bitrate')" stack>
+          <MItem class="dsk-bitrate" icon="monitor_heart" :title="t.stream.bitrateLimit" :text="applies('max_bitrate')" stack>
             <template #trail>
               <MIconButton icon="remove" :label="`${t.stream.bitrateLimit} −`" @click="nudgeBitrate(-NUDGE_MBPS)" />
               <span class="m-slider-value dsk-bitrate__value">{{ bitrateDisplay }}</span>

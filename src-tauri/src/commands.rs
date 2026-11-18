@@ -455,3 +455,15 @@ mod tests {
         ));
     }
 }
+
+/// True once when the previous run of the panel left a crash report behind (a panic, a native crash, a WebView2 failure): the window then asks whether to tell the developers.
+#[tauri::command]
+pub fn crash_recovered_ask() -> bool {
+    crate::crash::take_recovered()
+}
+
+/// The person answered the question about the report the previous run left behind (sent feedback or let it go): it is not asked again.
+#[tauri::command]
+pub fn crash_recovered_answered() {
+    crate::crash::mark_answered();
+}

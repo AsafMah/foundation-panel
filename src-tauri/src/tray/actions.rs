@@ -90,6 +90,8 @@ pub fn handle_tray_menu_event<R: Runtime + 'static>(app: &AppHandle<R>, menu_id:
             info!("ℹ️ 托盘菜单：显示关于对话框");
             let _ = windows::open_about_window(app);
         }
+        // 反馈问题…: the main panel opens the one feedback panel (the same panel every other entry opens)
+        "feedback" => open_main_panel_and_emit(app, "feedback", "open-feedback", serde_json::json!({})),
         "shutdown" => shutdown_sunshine(app),
         "lang_zh" => switch_tray_locale(app, "zh"),
         "lang_en" => switch_tray_locale(app, "en"),
@@ -117,8 +119,18 @@ pub fn handle_tray_menu_event<R: Runtime + 'static>(app: &AppHandle<R>, menu_id:
 
 /// Open the main panel and tell it to show the connect dialog on a tab (`pair` or `install`); the panel gets the event when it is ready, also when it had to be created first.
 fn open_connect_dialog<R: Runtime>(app: &AppHandle<R>, tab: &str) {
-    open_main_panel_from_tray(app, "connect");
-    emit_to_main_when_ready(app, "open-connect", serde_json::json!({ "tab": tab }));
+    open_main_panel_and_emit(app, "connect", "open-connect", serde_json::json!({ "tab": tab }));
+}
+
+/// Opens the main panel and sends it an event. While the old main window is still closing, both wait for it to be gone: the event would otherwise go to the closing window (or be dropped) and the new panel would never get it.
+fn open_main_panel_and_emit<R: Runtime>(app: &AppHandle<R>, source: &str, event: &'static str, payload: serde_json::Value) {
+    if windows::closing::is_closing("main") {
+        let source = source.to_owned();
+        windows::closing::after_closed(app, "main", move |app| open_main_panel_and_emit(&app, &source, event, payload));
+        return;
+    }
+    open_main_panel_from_tray(app, source);
+    emit_to_main_when_ready(app, event, payload);
 }
 
 /// 打开 VDD 设置
@@ -723,5 +735,39 @@ pub fn cleanup_prevent_sleep() {
             Ok(()) => info!("✅ 已清理防止睡眠状态"),
             Err(e) => error!("❌ 清理防止睡眠状态失败: {}", e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    const SRC: &str = include_str!("actions.rs");
+
+    /// The body of a function of this file (from its signature to the next top-level item).
+    fn body_of<'a>(name: &str) -> &'a str {
+        let at = SRC.find(&format!("fn {name}<")).unwrap_or_else(|| panic!("fn {name} not found"));
+        let rest = &SRC[at..];
+        let end = rest[3..].find("\nfn ").or_else(|| rest[3..].find("\n/// ")).map_or(rest.len(), |e| e + 3);
+        &rest[..end]
+    }
+
+    #[test]
+    fn an_event_for_the_main_panel_waits_for_the_closing_window_before_it_is_sent() {
+        let body = body_of("open_main_panel_and_emit");
+        let closing = body.find("is_closing(\"main\")").expect("the helper looks at the closing window");
+        let wait = body.find("after_closed(").expect("it waits for the old window to be gone");
+        let emit = body.rfind("emit_to_main_when_ready(").expect("and then sends the event");
+        assert!(closing < wait && wait < emit, "check, wait, then send: an event sent first would go to the window that is closing");
+        assert!(body.contains("move |app| open_main_panel_and_emit(&app"), "the waiting closure runs the whole open-and-send again, not only the open");
+    }
+
+    #[test]
+    fn the_feedback_and_connect_entries_use_the_helper_and_never_send_the_event_themselves() {
+        let feedback = SRC.find("\"feedback\" =>").expect("the feedback arm");
+        let arm = &SRC[feedback..SRC[feedback..].find("\n        \"shutdown\"").map_or(SRC.len(), |e| feedback + e)];
+        assert!(arm.contains("open_main_panel_and_emit(app, \"feedback\", \"open-feedback\""), "{arm}");
+        assert!(!arm.contains("emit_to_main_when_ready"));
+        let connect = body_of("open_connect_dialog");
+        assert!(connect.contains("open_main_panel_and_emit(app, \"connect\", \"open-connect\""));
+        assert!(!connect.contains("emit_to_main_when_ready"));
     }
 }

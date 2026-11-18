@@ -1,11 +1,11 @@
 <template>
   <div class="m-app m-app--scroll panel-shell">
     <!-- slim caption bar over the whole window: draggable, the window controls at the end; the pages start below it -->
-    <MCaption bem="panel-caption" data-tauri-drag-region @pointerdown="onTouchWindowDragStart">
+    <MCaption bem="panel-caption" data-tauri-drag-region="deep" @pointerdown="onTouchWindowDragStart">
       <template v-if="backButton" #back><MCaptionBack :page="backPage" :locale="locale" @back="jumps.back()" /></template>
       <template #version><MCaptionVersion :version="currentVersion" :build="buildInfo" :os="osName()" :locale="locale" :update="notice.version" @copied="onVersionCopied" @open-update="openUpdates" /></template>
       <template #brand><MBrand class="panel-caption__brand" :size="20" data-tauri-drag-region /></template>
-      <template #announcements><UpdateDownloadChip @open="showUpdateDialog = true" /><MStatusBell :locale="locale" /><MAnnouncementButton :unread="announcements.unread.value" :locale="locale" @open="router.navigate(ROUTES.ANNOUNCEMENTS)" /></template>
+      <template #announcements><UpdateDownloadChip @open="showUpdateDialog = true" /><MStatusBell :locale="locale" /><MFeedbackButton :locale="locale" /><MAnnouncementButton :unread="announcements.unread.value" :locale="locale" @open="router.navigate(ROUTES.ANNOUNCEMENTS)" /></template>
       <template #search><div class="panel-caption__search" data-tauri-drag-region><MUnifiedSearch :search="uni" :texts="searchT" :compact="compactSearch || caption.tight.value" :height="38" /></div></template>
       <template #connect><button type="button" class="m-caption-connect" :aria-label="connectT.title" :data-tip="connectT.title" :disabled="hostUnusable" @click="connect.show('pair')"><MIcon name="person_add" /><span>{{ connectT.title }}</span></button></template>
       <template #controls><div class="panel-caption__controls">
@@ -32,7 +32,7 @@
       <template #detail="{ entry }">
         <!-- while the host cannot be used the status page (the overlay) is the whole content area; a page that needs the host is not drawn under it -->
         <template v-if="offlineShown && !isWebPage" />
-        <PanelHome v-else-if="entry.id === ROUTES.HOME" :runtime="runtime" :update-available="!!updateInfo" @open="openDestination" @webui-navigate="openWebUi" />
+        <PanelHome v-else-if="entry.id === ROUTES.HOME" :runtime="runtime" :update-available="updateAvailable(updateInfo)" @open="openDestination" @webui-navigate="openWebUi" />
         <Welcome v-else-if="entry.id === ROUTES.WELCOME" :key="guideRun" @close="closeWelcome" @open-privacy="closeWelcome(); router.navigate(ROUTES.ABOUT)" @webui-navigate="openWebUi" @open-doctor="openDoctor" />
         <WebStreamSettings v-else-if="entry.id === ROUTES.WEB_STREAM" @close="goHome" />
         <VddSettings v-else-if="entry.id === ROUTES.VDD_SETTINGS" @close="back" @webui-navigate="openWebUi" />
@@ -73,6 +73,7 @@
           :include-prerelease="includePrerelease"
           :current-version="currentVersion"
           :clipboard-sync-enabled="clipboardSyncEnabled"
+          :clipboard-sync-state="clipboardSyncStateWord"
           :is-admin="isAdmin"
           :actions="toolsCtx"
           @theme-change="setTheme"
@@ -132,20 +133,22 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, getCurrentInstance, ref, toRef, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, defineAsyncComponent, getCurrentInstance, provide, ref, toRef, watch, onMounted, onBeforeUnmount } from 'vue'
 import { sunshine, sunshineService, tools, openExternalUrl } from '../tauri-adapter.js'
 import { SPONSORS } from '../config/sponsors.js'
 import QRCode from 'qrcode'
 import { invoke } from '@tauri-apps/api/core'
 import { qrSvgDataUrl } from '../composables/qrSvg.js'
+import { audioDevicesChannel } from '../composables/deviceStatusStore.js'
 import { openBigScreenWithNotice } from '../composables/openBigScreen.js'
 import { installMenuPopup } from '../composables/menuPopup.js'
 import { installTrayTheme } from '../composables/trayTheme.js'
-import { DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, openDevReport, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
+import { MFeedbackButton, openFeedbackHere, askDevReport, devReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
 import { developerOverlays, developerTexts, DEFAULT_FLAGS } from 'foundation-ui/developer'
 import { SOURCE_KEY, afterCheck, afterOpened, noticeView, readNotice, writeNotice } from 'foundation-ui/update'
 import { createPanelTelemetry } from '../composables/panelTelemetry.js'
 import { panelVersion } from '../composables/panelVersion.js'
+import { SEARCH_INDEX } from '@settings-data'
 import { labelOf, settingsHash } from 'foundation-ui/settings/index.js'
 import PanelHome from './PanelHome.vue'
 import PanelBusyLayer from './PanelBusyLayer.vue'
@@ -200,7 +203,8 @@ import { recordUpdateCheck } from '../composables/useUpdateCheckTime.js'
 import { useHostReach } from '../composables/useHostReach.js'
 import { ROW_OF_ROUTE, railItems, pageItems, barItems, barCurrent } from '../composables/panelNav.js'
 import { rtssInstalled, readRtssInstall } from '../composables/rtssInstall.js'
-import { rowKeywords, parseSettingsHash, SEARCH_INDEX } from 'foundation-ui/settings/index.js'
+import { rowKeywords, parseSettingsHash } from 'foundation-ui/settings/index.js'
+import { hasUpdate } from '../composables/updateCheckError.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import { useDualSenseStatus } from '../composables/useDualSenseStatus.js'
 import { useDualSenseText } from '../composables/useDualSenseText.js'
@@ -226,7 +230,7 @@ watch(() => router.currentRoute.value, (route) => useAppearance().setScope(route
 const { onTouchWindowDragStart } = useTouchWindowDrag(isMaximized)
 const {
   openUrl, cleanupCovers, restartAsAdmin, checkForUpdates, openGamepadTest, openStylusInputProbe,
-  showClipboardSyncStatus, initClipboardSyncStatus, clipboardSyncEnabled,
+  showClipboardSyncStatus, initClipboardSyncStatus, clipboardSyncEnabled, clipboardSyncStateWord,
 } = useTools()
 const { runtime, refresh: refreshRuntime } = useDeviceRuntime()
 // First run: the guide opens by itself when the host has no setup and no paired client
@@ -255,6 +259,8 @@ const openWebUi = (path) => {
 const goHome = () => openWebUi('/')
 // 新手引导 opens over the page it was opened from (帮助与关于): closing it, with its button or Esc, goes back there; started alone (first run) it opens the overview
 const closeWelcome = () => (router.nav.canPop.value ? router.goBack() : goHome())
+// the result of a check also stands for "up to date" (is_latest, shown as the sheet of the newest version): only a result that offers a newer version is an update to show on the overview
+const updateAvailable = hasUpdate
 const handleCheckForUpdates = async (channel = null) => {
   const result = await checkForUpdates(channel)
   recordUpdateCheck()
@@ -420,9 +426,14 @@ const telemetry = useTelemetryConsent({ api: telemetryApi })
 const panelTelemetry = createPanelTelemetry({
   getBase: async () => sunshine.getProxyUrl(),
   getVersion: panelVersion,
-  getUpdateSource: () => { try { return localStorage.getItem(SOURCE_KEY) || '' } catch { return '' } },
+  // the source the last download really came from, else the setting (the native side never answers empty); outside the app: the remembered choice
+  getUpdateSource: async () => { try { return String(await invoke('get_update_source_used')) } catch { try { return localStorage.getItem(SOURCE_KEY) || 'auto' } catch { return 'auto' } } },
+  // why the chosen source (Mirror酱) was not the one used in the last download: version_lag, cdk_invalid, quota, network, no_cdk; empty when it was used or not chosen
+  getUpdateSourceMiss: async () => { try { return String(await invoke('get_update_source_miss')) } catch { return '' } },
 })
 watch(() => nav.current.value, (page) => { if (page) panelTelemetry.page(String(page)) }, { immediate: true })
+// the first-run guide counts its steps through the same sender (guide_funnel; usage statistics choice)
+provide('guideFunnel', (props) => panelTelemetry.sender.track.guideFunnel(props))
 const errorBack = () => { if (nav.canPop.value) nav.pop(); else router.navigate(ROUTES.HOME) }
 const osName = () => (typeof navigator === 'undefined' ? '' : String(navigator.userAgentData?.platform || navigator.platform || ''))
 // the last host log lines go along with a report (scrubbed by buildReport): read once at start, as the Web UI does
@@ -463,7 +474,9 @@ const hostConfig = ref(null)
 const dualsenseKeys = ref([])
 const hostClients = ref([])
 const hostApps = ref([])
-const settingsList = useSettingsList({ locale, config: hostConfig, dualsenseKeys, sources: { clients: hostClients, apps: hostApps, components: computed(() => componentStatus.rows.value), rtss: computed(() => ({ installed: rtssInstalled.value === true })), ds: computed(() => runtime.ds), mic: computed(() => runtime.mic), usb: computed(() => runtime.usb) } })
+const settingsList = useSettingsList({ locale, config: hostConfig, dualsenseKeys, sources: { clients: hostClients, apps: hostApps, components: computed(() => componentStatus.rows.value), rtss: computed(() => ({ installed: rtssInstalled.value === true })), ds: computed(() => runtime.ds), mic: computed(() => runtime.mic), usb: computed(() => runtime.usb), audio: computed(() => audioDevicesChannel.data.value?.render || null) } })
+// the playback devices of the host: the audio row names the chosen device, the setting holds an id
+onMounted(() => { audioDevicesChannel.fetch().catch(() => null) })
 // the settings used last belong to the host this window manages: the proxy target is this machine's host while it is a loopback address, and the origin of the host it points at
 // otherwise (the panel accepts a --url that turns the whole window to another host); the first scoping keeps the list this window already has
 onMounted(async () => {
@@ -570,12 +583,22 @@ const onFramePin = (event) => {
   if (d.op === 'pin') pinToHome('panel-home', d.spec); else if (d.op === 'unpin') unpinFromHome('panel-home', d.spec)
 }
 let unlistenConnect = null
+let unlistenFeedback = null
+let stopCrashWatch = null
 onMounted(async () => {
   pairing.start()
   window.addEventListener('message', onFramePin)
   try { const { listen } = await import('@tauri-apps/api/event'); unlistenConnect = await listen('open-connect', (event) => connect.show(event.payload?.tab === 'install' ? 'install' : 'pair')) } catch { /* not in the app window */ }
+  // the tray menu's 反馈问题… opens the one feedback panel; a crash that was recovered at the start asks once whether to tell the developers (a short decision in a centred dialog, then the drawer); the answer of `crash_recovered_ask` is true once, when the previous run left a crash report behind
+  try {
+    const { listen } = await import('@tauri-apps/api/event')
+    unlistenFeedback = await listen('open-feedback', () => { void openFeedbackHere({}) })
+    if (await invoke('crash_recovered_ask').catch(() => false)) askDevReport('crash')
+    // the answer (feedback sent, or let go) is what stops the question: a program that ends before it asks again at the next start
+    stopCrashWatch = watch(() => devReport.decision, (now, was) => { if (was === 'crash' && !now) invoke('crash_recovered_answered').catch(() => {}) })
+  } catch { /* not in the app window */ }
 })
-onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); removeErrorHandlers?.() })
+onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); if (unlistenFeedback) unlistenFeedback(); stopCrashWatch?.(); removeErrorHandlers?.() })
 onMounted(async () => { removeErrorHandlers = installErrorHandlers({ app: shellApp }); startAutoReport({ context: errorContext }); void refreshLogs(); void panelTelemetry.start({ startMs: typeof performance !== 'undefined' ? performance.now() : undefined }); await telemetry.refresh() })
 // what the buttons of 日志与诊断 do, from the search: the same host calls, the answer in the snackbar
 const hostAction = async (path, doneText, method = 'POST') => {
@@ -756,7 +779,8 @@ const ctxCallbacks = {
   doctor: () => { componentStatus.openPage(); void componentStatus.checkAll() },
   openWebUi: async () => { const base = String((await sunshine.getUrl()) || ''); if (base) await openExternalUrl(base) },
   openDevtools: () => { invoke('dev_open_devtools').catch(() => useNotify().snack(devmodeTexts(locale.value).ctxDevtoolsFail)) },
-  reportHere: ({ route, place, text }) => { void openDevReport({ kind: 'feedback', draft: { title: '', description: `${devmodeTexts(locale.value).ctxReport}: ${route}${place ? ` (${place})` : ''}${text ? ` — ${text}` : ''}\n\n` } }) },
+  // 反馈此处的问题: the one feedback panel, with the page and what was under the pointer (the text shows in the panel and is not sent)
+  reportHere: ({ place, text }) => { void openFeedbackHere({ place, text }) },
   get pet() { return [{ id: 'pet-settings', label: contextTexts(locale.value).petSettings, icon: 'pets', run: () => openPanelPage('pet') }] },
 }
 // the rows that have a tile on the overview that opens them: 固定到概览 pins that tile (the same functions as the pin of the search results)

@@ -27,10 +27,10 @@ const FAILURES_BEFORE_NATIVE: u32 = 2;
 const WINDOW_WAIT: Duration = Duration::from_millis(5000);
 
 /// Every item id of the native menu (menu.rs) except the containers: what the three menus can send back, and all that `tray_popup_act` accepts.
-pub(super) const ITEM_IDS: [&str; 43] = [
+pub(super) const ITEM_IDS: [&str; 44] = [
     "tray_status", "recover_service", "tray_notification_action", "open_main_panel", "connect_device", "download_client", "open_desktop", "auto_start", "open_sunshine", "vdd_settings", "vdd_create",
     "vdd_close", "vdd_toggle_keep_enabled", "vdd_toggle_headless_create", "reset_display", "show_toolbar", "host_performance", "rtss_control", "web_stream", "log_console", "debug_page", "lang_zh",
-    "lang_en", "lang_ja", "prevent_sleep", "restart_user_mode", "import_config", "export_config", "reset_config", "clear_cache", "check_update", "about", "star_project", "visit_project_sunshine",
+    "lang_en", "lang_ja", "prevent_sleep", "restart_user_mode", "import_config", "export_config", "reset_config", "clear_cache", "check_update", "about", "feedback", "star_project", "visit_project_sunshine",
     "visit_project_moonlight", "visit_site", "visit_bilibili", "star_github", "sponsor_qiin", "sponsor_yundi339", "sponsor_skyhua", "restart", "shutdown",
 ];
 
@@ -290,6 +290,7 @@ pub(super) fn labels(s: &TrayStrings) -> Value {
     put("clear_cache", s.clear_cache);
     put("check_update", s.check_update);
     put("about", s.about);
+    put("feedback", s.feedback);
     put("star_project", s.star_project);
     put("visit_project_sunshine", s.visit_project_sunshine);
     put("visit_project_moonlight", s.visit_project_moonlight);
@@ -712,14 +713,14 @@ mod tests {
 
     #[test]
     fn the_item_ids_are_the_ids_menu_rs_builds() {
-        assert_eq!(ITEM_IDS.len(), 43);
+        assert_eq!(ITEM_IDS.len(), 44);
         for id in ITEM_IDS {
             assert!(MENU.contains(&format!("\"{id}\"")), "menu.rs has no '{id}'");
         }
         let mut sorted = ITEM_IDS.to_vec();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), 43, "no id twice");
+        assert_eq!(sorted.len(), 44, "no id twice");
     }
 
     #[test]

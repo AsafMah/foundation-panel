@@ -4,7 +4,7 @@ import { usbip } from '../tauri-adapter.js'
 import { useI18n } from '../desktop/i18n/index.js'
 import { useDeviceComponentOperation } from './useDeviceComponentOperation.js'
 import { usbipStatusChannel } from './deviceStatusStore.js'
-import { usbipTransportNeedsCleanup } from './deviceHubStatus.js'
+import { usbipCanReplaceLegacy, usbipTransportNeedsCleanup } from './deviceHubStatus.js'
 
 /** Coordinates shared transport maintenance and refreshes actual state after failed operations. */
 export function useUsbTransport() {
@@ -13,6 +13,8 @@ export function useUsbTransport() {
   const status = reactive({
     supported: true,
     installed: false,
+    externally_managed: false,
+    replaceable: false,
     ready: false,
     version: '',
     version_valid: false,
@@ -26,11 +28,13 @@ export function useUsbTransport() {
   const statusProbeFailed = ref(false)
   const installing = ref(false)
   const cleaning = ref(false)
+  const replacing = ref(false)
   let statusRefreshPromise = null
 
   const attachedDevices = computed(() => status.attached_devices || [])
   const needsCleanup = computed(() => usbipTransportNeedsCleanup(status))
-  const transportBusy = computed(() => Boolean(sharedOperation.busyElsewhere.value || installing.value || cleaning.value))
+  const canReplaceLegacy = computed(() => usbipCanReplaceLegacy(status))
+  const transportBusy = computed(() => Boolean(sharedOperation.busyElsewhere.value || installing.value || cleaning.value || replacing.value))
   const statusClass = computed(() => {
     if (status.ready) return 'state-ready'
     if (!statusLoaded.value) return ''
@@ -42,6 +46,7 @@ export function useUsbTransport() {
     if (!statusLoaded.value) return t.value.deviceHub.usb.checkingTransport
     if (statusProbeFailed.value) return t.value.deviceHub.usb.statusUnavailable
     if (!status.supported) return t.value.deviceHub.usb.transportUnsupported
+    if (status.externally_managed) return t.value.deviceHub.usb.externallyManaged
     if (status.ready) return t.value.deviceHub.usb.transportReady
     if (!status.installed) return t.value.deviceHub.usb.transportMissing
     return t.value.deviceHub.usb.transportNeedsRepair
@@ -103,7 +108,7 @@ export function useUsbTransport() {
   }
 
   const installTransport = sharedOperation.wrap(async () => {
-    if (transportBusy.value) return
+    if (transportBusy.value || status.externally_managed) return
     installing.value = true
     try {
       await ElMessageBox.confirm(
@@ -137,7 +142,7 @@ export function useUsbTransport() {
   })
 
   const cleanupResidual = sharedOperation.wrap(async () => {
-    if (transportBusy.value) return
+    if (transportBusy.value || status.externally_managed) return
     const removing = !needsCleanup.value
     cleaning.value = true
     try {
@@ -171,9 +176,43 @@ export function useUsbTransport() {
     else ElMessage.success(removing ? t.value.deviceHub.components.transportRemoved : t.value.deviceHub.usb.cleanupSuccess)
   })
 
+  /** The person's own request to replace an external full usbip-win2; the host decides again and rolls back on failure. */
+  const replaceLegacy = sharedOperation.wrap(async () => {
+    if (transportBusy.value || !canReplaceLegacy.value || attachedDevices.value.length) return
+    replacing.value = true
+    try {
+      await ElMessageBox.confirm(
+        t.value.deviceHub.usb.replaceConfirm,
+        t.value.deviceHub.usb.replaceLegacy,
+        { confirmButtonText: t.value.deviceHub.usb.replaceLegacy, cancelButtonText: t.value.deviceHub.usb.cancel, type: 'warning', danger: true },
+      )
+    } catch { replacing.value = false; return }
+    if (statusRefreshPromise) await statusRefreshPromise
+    sharedOperation.markChanged()
+    usbipStatusChannel.invalidate()
+    let result
+    try {
+      result = await usbip.replaceLegacyTransport()
+    } catch (error) {
+      await refreshStatus({ force: true })
+      return ElMessage.error(friendlyError(error))
+    } finally {
+      replacing.value = false
+    }
+    if (!result?.success) {
+      // A failed replacement may have changed the system (rolled back to "not installed"): show what is really there.
+      await refreshStatus({ force: true })
+      return ElMessage.error(friendlyError(result?.message))
+    }
+    applyStatus(result.data)
+    usbipStatusChannel.prime(result)
+    if (result.data?.ready) ElMessage.success(t.value.deviceHub.usb.replaceSuccess)
+    else ElMessage.warning(t.value.deviceHub.usb.rebootRequired)
+  })
+
   sharedOperation.onOtherChange(() => refreshStatus({ afterCurrent: true, force: true }))
   onMounted(() => refreshStatus())
   // KeepAlive 重新显示时用缓存立即校准，过期则静默重探。
   onActivated(() => refreshStatus())
-  return { status, statusLoading, statusLoaded, statusProbeFailed, installing, cleaning, attachedDevices, needsCleanup, transportBusy, statusClass, statusTitle, friendlyError, refreshStatus, installTransport, cleanupResidual }
+  return { status, statusLoading, statusLoaded, statusProbeFailed, installing, cleaning, replacing, attachedDevices, needsCleanup, canReplaceLegacy, transportBusy, statusClass, statusTitle, friendlyError, refreshStatus, installTransport, cleanupResidual, replaceLegacy }
 }

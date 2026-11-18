@@ -171,6 +171,10 @@ fn emit_release_repository() {
 
 fn main() {
     emit_release_repository();
+    // The main thread runs the window procedures and the WebView2 callbacks: 8 MiB instead of the 1 MiB default of the linker (two stack overflows of the first release).
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bins=/STACK:8388608");
+    }
     println!("cargo:rerun-if-changed=component-compatibility.json");
     let compatibility: serde_json::Value = serde_json::from_str(
         &fs::read_to_string("component-compatibility.json")
@@ -183,6 +187,7 @@ fn main() {
         ("USBIP_URL", &compatibility["usbip"]["installer_url"]),
         ("USBIP_SHA256", &compatibility["usbip"]["installer_sha256"]),
         ("USBIP_TOOL_SHA256", &compatibility["usbip"]["tool_sha256"]),
+        ("USBIP_PAYLOAD_SHA256", &compatibility["usbip"]["slim_payload_sha256"]),
         (
             "USBIP_DRIVER_SHA256",
             &compatibility["usbip"]["driver_sha256"],

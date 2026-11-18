@@ -1,11 +1,16 @@
 /** Requires explicit shared cleanup for residual devices, unsupported versions or ABI conflicts. */
 export function usbipTransportNeedsCleanup(status = {}) {
-  return Boolean(
+  return !status.externally_managed && Boolean(
     status.vhci_residual
     // error_code 是后端下发的结构化码（Rust status::detail_error_code），
     // 不得回退到解析 detail 文本。
     || (status.installed && (!status.version_valid || status.error_code === 'USBIP-EXEC-006')),
   )
+}
+
+/** The external full usbip-win2 that the host's helper says may be replaced (it decides; the panel keeps no ownership rules). */
+export function usbipCanReplaceLegacy(status = {}) {
+  return Boolean(status.externally_managed && status.replaceable)
 }
 
 export const MICROPHONE_BACKENDS = Object.freeze(['auto', 'vb_cable', 'usbip_experimental', 'disabled'])
