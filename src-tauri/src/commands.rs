@@ -144,17 +144,8 @@ pub async fn open_tool_window(app: AppHandle, tool_name: String) -> Result<(), S
     info!("Opening tool window: {}", tool_name);
 
     match tool_name.as_str() {
-        "main" => {
-            if let Some(window) = app.get_webview_window("main") {
-                windows::show_and_activate_window(&window);
-            }
-        }
-        "vdd" => {
-            if let Some(window) = app.get_webview_window("main") {
-                windows::show_and_activate_window(&window);
-                crate::panel_page::open_page(&window, "vdd");
-            }
-        }
+        "main" => windows::activate_main_window(&app, None),
+        "vdd" => windows::open_main_panel_page(&app, "vdd")?,
         "about" => {
             windows::open_about_window(&app)?;
         }

@@ -767,13 +767,41 @@ pub async fn component_set_enabled(enabled: bool) -> Result<EnhancementComponent
     let _operation = COMPONENT_OPERATION
         .try_lock()
         .map_err(|_| "HDR-OP-001: another component operation is running".to_string())?;
-    let mut current = supported_config().await?;
-    if enabled && !current.settings.backends.contains_key(COMPONENT_ID) {
-        return Err("HDR-PKG-006: import the component before selecting it".to_string());
-    }
-    *selected_backend_mut(&mut current.settings) = enabled.then(|| COMPONENT_ID.to_string());
-    let saved = crate::hdr_enhanced::save_config(current, None).await?;
+    let saved = select_backend_config(
+        || supported_config(),
+        |current| crate::hdr_enhanced::save_config(current, None),
+        enabled,
+    )
+    .await?;
     status_for_config(saved).await
+}
+
+async fn select_backend_config<Load, LoadFuture, Save, SaveFuture>(
+    mut load: Load,
+    mut save: Save,
+    enabled: bool,
+) -> Result<crate::hdr_enhanced::ConfigState, String>
+where
+    Load: FnMut() -> LoadFuture,
+    LoadFuture: std::future::Future<Output = Result<crate::hdr_enhanced::ConfigState, String>>,
+    Save: FnMut(crate::hdr_enhanced::ConfigState) -> SaveFuture,
+    SaveFuture: std::future::Future<Output = Result<crate::hdr_enhanced::ConfigState, String>>,
+{
+    // The toggle touches one field; another window may have saved since the
+    // read. Reload and re-apply only this component's selection instead of
+    // surfacing the conflict to the user.
+    for attempt in 0..3 {
+        let mut current = load().await?;
+        if enabled && !current.settings.backends.contains_key(COMPONENT_ID) {
+            return Err("HDR-PKG-006: import the component before selecting it".to_string());
+        }
+        *selected_backend_mut(&mut current.settings) = enabled.then(|| COMPONENT_ID.to_string());
+        match save(current).await {
+            Err(error) if error.starts_with("HDR-CFG-006:") && attempt < 2 => continue,
+            result => return result,
+        }
+    }
+    unreachable!("the final save attempt always returns")
 }
 
 async fn clear_uninstalled_config<Load, LoadFuture, Save, SaveFuture>(
@@ -962,6 +990,45 @@ mod tests {
             result.settings.selected_nr_backend
         };
         assert_eq!(other_selection.as_deref(), Some(other));
+    }
+
+    #[tokio::test]
+    async fn selection_reloads_after_conflict_and_keeps_other_component_edits() {
+        let loads = std::cell::Cell::new(0);
+        let saves = std::cell::Cell::new(0);
+        let result = select_backend_config(
+            || {
+                loads.set(loads.get() + 1);
+                let mut current = uninstall_config(loads.get());
+                *selected_backend_mut(&mut current.settings) = None;
+                std::future::ready(Ok(current))
+            },
+            |current| {
+                saves.set(saves.get() + 1);
+                std::future::ready(if saves.get() == 1 {
+                    Err("HDR-CFG-006: settings changed in another window".to_string())
+                } else {
+                    Ok(current)
+                })
+            },
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(loads.get(), 2);
+        let other = if IS_NR {
+            "alkaidlab.nvidia_rtx_video"
+        } else {
+            "alkaidlab.nvidia_dlssnr"
+        };
+        let (ours, theirs) = if IS_NR {
+            (result.settings.selected_nr_backend.as_deref(), result.settings.selected_backend.as_deref())
+        } else {
+            (result.settings.selected_backend.as_deref(), result.settings.selected_nr_backend.as_deref())
+        };
+        assert_eq!(ours, Some(COMPONENT_ID));
+        assert_eq!(theirs, Some(other));
+        assert_eq!(result.settings.backends[other].version, "2");
     }
 
     #[tokio::test]

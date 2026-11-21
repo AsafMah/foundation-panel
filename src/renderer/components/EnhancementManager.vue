@@ -62,7 +62,8 @@ const controlsText = computed(() => enhancementControlsText(locale.value))
 const hdrText = useRtxHdrI18n()
 const text = computed(() => ({
   ...(props.kind === 'nr' ? dlssNrText(locale.value) : hdrText.value),
-  saveSuccess: controlsText.value.permissionSaved
+  saveSuccess: controlsText.value.permissionSaved,
+  permissionSaveFailed: controlsText.value.permissionSaveFailed
 }))
 
 const {

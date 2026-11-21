@@ -38,8 +38,8 @@ const messages = {
     "close": "隐藏浮层",
     "enhancement": "画面增强",
     "preserved": "保持输出",
-    "remembered": "调整成功后会记住，供之后的串流使用；应用专属设置优先",
-    "saved": "已记住，之后的串流会使用此设置；应用专属设置优先",
+    "remembered": "参数调整会记住，供之后的串流使用；开关仅对当前串流生效",
+    "saved": "参数已记住；开关仅对当前串流生效",
     "resetDefaults": "恢复 NR 默认值",
     "saveFailed": "当前串流已调整，但未能保存为下次串流的默认值",
     "opacity": "背景不透明度",
@@ -48,6 +48,7 @@ const messages = {
     "hdrBusy": "RTX HDR 正在占用增强位置",
     "unsupported": "当前主机或捕获路径不支持实时切换",
     "fallback": "增强未生效，正在使用原画；关闭后可重新尝试",
+    "componentUnavailable": "尚未允许串流使用 DLSS NR。请在「画质增强管理 → 增强功能」开启；开启后当前串流会自动重试，若长时间未恢复可关闭后重新打开。",
     "wait": "等待主机处理下一帧；首次开启需要初始化",
     "retry": "重试",
     "disconnected": "无法读取主机状态，请确认 Sunshine 正在运行",
@@ -93,8 +94,8 @@ const messages = {
     "close": "Hide overlay",
     "enhancement": "Enhancement",
     "preserved": "Output preserved",
-    "remembered": "Changes are remembered after they apply. App settings take priority.",
-    "saved": "Saved for future streams. App settings take priority.",
+    "remembered": "Parameter changes are remembered for future streams; the switch affects only this stream.",
+    "saved": "Parameters saved; the switch affects only this stream.",
     "resetDefaults": "Reset NR defaults",
     "saveFailed": "This stream changed, but the defaults could not be saved for future streams.",
     "opacity": "Background opacity",
@@ -103,6 +104,7 @@ const messages = {
     "hdrBusy": "RTX HDR is using the enhancement slot",
     "unsupported": "This host or capture path does not support live switching",
     "fallback": "Using the original image. Switch off and on to retry.",
+    "componentUnavailable": "DLSS NR is not allowed for streaming yet. Enable it under Image enhancement → Enhancements; this stream retries automatically. If it does not recover, switch it off and on again.",
     "wait": "Waiting for the next frame. First use needs initialization.",
     "retry": "Retry",
     "disconnected": "Cannot read host status. Check that Sunshine is running.",
@@ -113,4 +115,12 @@ const messages = {
 
 export function nrOverlayText(locale) {
   return messages[locale.startsWith("zh") ? "zh" : "en"]
+}
+
+/** The degraded notice for a pipeline: a known reason gets actionable wording, anything else keeps the fallback plus its raw code. */
+export function nrDegradedReason(pipeline, text) {
+  const reason = pipeline?.nr_reason || ""
+  if (reason === "component_unavailable")
+    return { main: text.componentUnavailable, detail: "" }
+  return { main: text.fallback, detail: reason }
 }

@@ -88,6 +88,7 @@
 </template>
 
 <script setup>
+import { setVisibleInterval, clearVisibleInterval } from '../../composables/pageVisibility.js'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { MPage, MGroup, MSection, MItem, MSliderItem, MChoiceItem, MValueItem, MChipSet, MStat, MSparkline, MBanner, MButton, MIconButton, MFooter, MEmpty, MDialog, MPageLoading, useNotify } from 'foundation-ui/vue'
 import { invoke } from '@tauri-apps/api/core'
@@ -208,8 +209,8 @@ async function refresh(manual = false) {
   try { await Promise.all([loadSessions(), loadPerf(), pollNr()]); readAt.value = Date.now() } finally { inFlight = false; refreshing.value = false; loaded.value = true }
 }
 let timer = null
-onMounted(() => { refresh(); timer = setInterval(refresh, 2000) })
-onUnmounted(() => clearInterval(timer))
+onMounted(() => { refresh(); timer = setVisibleInterval(refresh, 2000, { resume: true }) })
+onUnmounted(() => clearVisibleInterval(timer))
 </script>
 
 <style>

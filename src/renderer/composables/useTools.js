@@ -7,6 +7,7 @@ import { useI18n } from '../desktop/i18n/index.js'
 import { formatMessage } from '../shared/format-message.js'
 import { isCurrentVersionUnknown, isPrereleaseUnavailable, updateCheckFailureText } from './updateCheckError.js'
 import { clipboardSyncState, clipboardSyncWorks } from './clipboardStatusView.js'
+import { setVisibleInterval, clearVisibleInterval } from './pageVisibility.js'
 
 // Module-scoped reactive flag so all sidebar instances share state.
 const clipboardSyncEnabled = ref(false)
@@ -495,11 +496,11 @@ export function useTools() {
     if (clipboardSyncInitialised) return
     clipboardSyncInitialised = true
     await refreshClipboardSyncStatus()
-    clipboardSyncPollTimer = window.setInterval(refreshClipboardSyncStatus, 5000)
+    clipboardSyncPollTimer = setVisibleInterval(refreshClipboardSyncStatus, 5000, { resume: true })
     window.addEventListener(
       'beforeunload',
       () => {
-        if (clipboardSyncPollTimer) window.clearInterval(clipboardSyncPollTimer)
+        if (clipboardSyncPollTimer) clearVisibleInterval(clipboardSyncPollTimer)
         clipboardSyncPollTimer = null
       },
       { once: true },

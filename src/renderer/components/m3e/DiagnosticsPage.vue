@@ -53,6 +53,7 @@
 </template>
 
 <script setup>
+import { setVisibleInterval, clearVisibleInterval } from '../../composables/pageVisibility.js'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { MDiagnostics, MDialog, MButton, MChip, MItem, diagnosticsTexts, guideTexts, coachTexts, remoteTexts, MGroup, MSection, useDialogs, useNotify } from 'foundation-ui/vue'
@@ -66,7 +67,7 @@ import { saveThroughDialog } from '../../shared/saveDialog.js'
 import { useI18n } from '../../desktop/i18n/index.js'
 
 // 诊断与日志. The same page as the Web UI. What only this window can read (the panel log, the device status) is passed as facts.
-const emit = defineEmits(['back', 'go', 'webui-navigate', 'open-guide', 'open-remote'])
+const emit = defineEmits(['back', 'go', 'webui-navigate', 'open-guide', 'open-remote', 'open-reset'])
 const { t, locale } = useI18n()
 const logText = computed(() => t.value.logConsole)
 const refreshing = ref(false)
@@ -169,6 +170,7 @@ async function downloadLogs() {
 const commands = computed(() => ({
   restart,
   resetDisplay: diag.platform.value === 'windows' ? resetDisplay : undefined,
+  resetSettings: () => emit('open-reset'),
   ai: () => ai.open(),
   diagnose: () => ai.diagnose(diag.text.value),
   downloadLogs,
@@ -217,6 +219,6 @@ async function clearLogs() {
 async function exportLogs(format) {
   await exportPanelLogs({ invoke, format, texts: logText.value, alert: useDialogs().alert })
 }
-onMounted(() => { diag.loadFacts(); diag.start(); void refreshClipboard(); clipTimer = window.setInterval(refreshClipboard, 5000) })
-onBeforeUnmount(() => { window.clearInterval(clipTimer) })
+onMounted(() => { diag.loadFacts(); diag.start(); void refreshClipboard(); clipTimer = setVisibleInterval(refreshClipboard, 5000, { resume: true }) })
+onBeforeUnmount(() => { clearVisibleInterval(clipTimer) })
 </script>

@@ -297,6 +297,55 @@ pub(crate) fn externally_managed() -> bool {
     false
 }
 
+/// Everything the ownership decision reads, as one string: the registered installations (name, version, location,
+/// layout), the driver services and the files that mark a full vendor installation. It changes when the
+/// installation does, so an answer derived from it (the host helper's `replaceable`) is reused only while it matches.
+#[cfg(target_os = "windows")]
+pub(super) fn ownership_fingerprint() -> String {
+    let mut parts = Vec::new();
+    match uninstall_entries() {
+        Ok(entries) => {
+            let mut rows: Vec<String> = entries
+                .iter()
+                .map(|entry| {
+                    let value = |name: &str| {
+                        entry
+                            .key
+                            .get_value::<String, _>(name)
+                            .unwrap_or_default()
+                    };
+                    format!(
+                        "{}|{}|{}|{}|{}",
+                        entry.display_name,
+                        value("DisplayVersion"),
+                        value("InstallLocation"),
+                        entry.slim,
+                        value("SourceSHA256")
+                    )
+                })
+                .collect();
+            rows.sort();
+            parts.push(rows.join(";"));
+        }
+        Err(error) => parts.push(format!("entries-error:{error}")),
+    }
+    let hklm = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE);
+    for name in ["usbip2_ude", "usbip2_filter", "usbip2_vhci"] {
+        let present = hklm
+            .open_subkey(format!(r"SYSTEM\CurrentControlSet\Services\{name}"))
+            .is_ok();
+        parts.push(format!("{name}={present}"));
+    }
+    if let Some(root) = std::env::var_os("ProgramW6432").or_else(|| std::env::var_os("ProgramFiles"))
+    {
+        let root = std::path::PathBuf::from(root).join("USBip");
+        for name in ["wusbip.exe", "include", "lib", "usbip.exe", "payload.json", "devnode.exe"] {
+            parts.push(format!("{name}={}", root.join(name).exists()));
+        }
+    }
+    parts.join("#")
+}
+
 #[cfg(target_os = "windows")]
 pub(crate) struct UninstallEntry {
     pub(crate) key: winreg::RegKey,

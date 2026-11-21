@@ -315,6 +315,7 @@ export const zh = {
     resetDefaults: '恢复默认',
     saveSettings: '保存设置',
     saveSuccess: '设置已保存',
+    saveError: '保存设置失败',
     resetSuccess: '设置已恢复默认',
   },
 
@@ -1216,6 +1217,24 @@ export const zh = {
     system: { title: '系统', lead: '驱动组件、诊断与助手。', network: '网络概览', troubleshooting: '诊断与日志', components: '组件', componentsNote: '虚拟手柄总线、USB/IP 传输等驱动', diagnostics: '诊断工具', diagnosticsNote: '手柄测试、手写笔检测、串流计时器、延迟测试', assistant: '米塔 AI', assistantNote: '帮你排查问题' },
   },
   deviceHub: {
+    vbComponent: {
+      title: 'VB-CABLE 虚拟声卡', device: '设备状态', package: '安装包', manage: '管理组件',
+      check: '检查', download: '下载安装包', install: '安装', repair: '修复', uninstall: '卸载', cleanup: "清理残留",
+      notChecked: '尚未检查', packageReady: '安装包已准备好并通过校验', packageMissing: '未找到已校验的安装包',
+      states: { missing: '未安装', installed: '驱动已安装', disabled: '设备已禁用', unavailable: '设备状态异常，请先检查', pending: '设备已移除，但驱动仍存在；可继续卸载残留' },
+      separateHint: '下载后需手动选择安装；安装和卸载会请求管理员权限。',
+      installConfirm: '将安装 VB-Audio 的 VB-CABLE Pack43 驱动（仅支持 x64 Windows）。请先关闭正在使用音频设备的应用。继续吗？',
+      enableConfirm: '将修复并启用设备管理器中已禁用的 VB-CABLE 设备。继续吗？',
+      uninstallConfirm: '将卸载 VB-CABLE 驱动及其设备。请先关闭使用该声卡的应用。卸载后建议重启电脑。继续吗？',
+      phases: { check: '正在检查设备…', download: '正在下载并校验安装包…', install: '正在安装驱动…', enable: '正在启用设备…', uninstall: '正在卸载驱动…' },
+      downloaded: '安装包已下载。请手动选择安装。', installed: '驱动安装完成。', enabled: '设备已启用。', uninstalled: '卸载操作已结束，建议重启电脑。',
+      restartSuggested: 'Windows 提示此次操作可能需要重启电脑；请保存工作后自行处理。',
+      checkFailed: '检查失败：', downloadFailed: '下载失败：', installFailed: '安装失败：', enableFailed: '启用失败：', uninstallFailed: '卸载失败：',
+      operationTimeout: '操作已超过三分钟，驱动可能仍在后台处理。请稍后重新检查，避免重复操作。',
+      operationBusy: '另一项驱动操作仍在进行，请稍后重试。',
+      deviceBusy: 'VB-CABLE 驱动仍在使用或正在释放，无法卸载。请关闭使用虚拟声卡的程序后重试；可能需要重启。',
+      unsupportedArchitecture: 'Pack43 仅支持在 x64 Windows 上安装；已安装的其他版本仍可检查和卸载。',
+    },
     eyebrow: 'MANAGE / DEVICE HUB',
     title: '设备中心',
     intro: '管理手柄与麦克风、USB/IP 传输与 USB 透传；串流参数仍在 WebUI 中配置。',
@@ -1290,9 +1309,9 @@ export const zh = {
       },
       "vbCableDownload": "下载",
       "vbCableOpenDevmgmt": "打开设备管理器",
-      "vbCableInstall": "安装 VB-CABLE",
+      "vbCableInstall": "安装虚拟麦克风",
       "vbCableEnable": "启用 VB-CABLE",
-      "vbCableInstallConfirm": "主机将从 VB-Audio 官网下载 VB-CABLE 驱动，校验安装程序的数字签名后，以管理员权限静默安装。安装会向 Windows 添加一个虚拟音频设备。继续吗？",
+      "vbCableInstallConfirm": "将安装由 VB-Audio 提供的 VB-CABLE 虚拟音频驱动。继续吗？",
       "vbCableEnableConfirm": "主机将启用在设备管理器中被禁用的 VB-CABLE 设备（pnputil /enable-device）。继续吗？",
       "vbCableJobs": {
         "downloading": "正在下载 VB-CABLE…",
@@ -1302,7 +1321,7 @@ export const zh = {
       },
       "vbCableErrors": {
         "download": "下载失败。请检查网络后重试，或手动下载。",
-        "signature": "安装程序没有 VB-Audio 的有效数字签名，已停止安装。",
+        "signature": "VB-CABLE 安装文件校验失败，已停止安装。",
         "admin": "Sunshine 没有以管理员权限运行，无法安装或启用驱动。",
         "failed": "没有成功：VB-CABLE 仍不可用。可打开设备管理器查看，或手动安装。"
       },
@@ -1562,7 +1581,7 @@ export const zh = {
     },
     "refused": {
       "3": "有数值超出了允许的范围，主机没有保存。",
-      "5": "这些设置在当前 Sunshine 版本里暂未开放，没有保存。",
+      "5": "这些设置当前不可用（主机没有对应功能、需要客户端支持，或需要调参通道），没有保存。原因见每一项。",
       "8": "Sunshine 无法写入配置文件，请检查磁盘空间与文件权限。",
       "9": "请求格式不正确，主机没有保存。",
       "other": "主机拒绝了这次保存。"
@@ -1654,9 +1673,9 @@ export const zh = {
       "only_modified": "只看已修改",
       "pending": {
         "count": "{count} 项",
-        "hint": "当前版本还没有接入这些选项。",
-        "reason": "当前版本暂未开放",
-        "title": "主机尚未实现"
+        "hint": "这些选项当前不可用，每一项写着原因。",
+        "reason": "当前不可用",
+        "title": "当前不可用的设置"
       },
       "presets": {
         "applied": "已应用“{name}”预设，保存后生效。",
@@ -1681,10 +1700,10 @@ export const zh = {
       "retry": "重试",
       "save": "保存",
       "save_ok": "已保存 {count} 项。",
-      "save_partial": "已保存 {applied} 项；另有 {unavailable} 项暂未开放，没有保存。",
+      "save_partial": "已保存 {applied} 项；另有 {unavailable} 项当前不可用，没有保存。",
       "saving": "保存中…",
       "search": "搜索设置",
-      "show_pending": "显示暂未开放的项",
+      "show_pending": "显示不可用的设置",
       "trigger_preview": {
         "feedback": "反馈",
         "mode": "预览类型",
@@ -1696,7 +1715,7 @@ export const zh = {
         "right": "右扳机"
       },
       "title": "DualSense 手柄调校",
-      "wired": "{wired} 项可调 · {pending} 项本版本尚未接入"
+      "wired": "{wired} 项可调 · {pending} 项当前不可用"
     }
   },
 

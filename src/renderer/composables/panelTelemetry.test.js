@@ -52,6 +52,35 @@ test('the panel shell starts it once, tells it the page, and the host is the sin
   assert.doesNotMatch(shell, /firebase|google-analytics|gtag/i)
 })
 
+test('foundation-error-event forwards structured error codes without user text', async () => {
+  const calls = []
+  const listeners = new Map()
+  const store = new Map()
+  globalThis.sessionStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) }
+  globalThis.localStorage = { getItem: () => null, setItem: () => {} }
+  try {
+    const panel = createPanelTelemetry({
+      getBase: async () => 'http://127.0.0.1:19999/',
+      getVersion: async () => '1.0.8',
+      fetchFn: async (_url, options) => { calls.push(JSON.parse(options.body)); return { ok: true, status: 200 } },
+      win: {
+        addEventListener(name, fn) { listeners.set(name, fn) },
+        removeEventListener(name, fn) { if (listeners.get(name) === fn) listeners.delete(name) },
+      },
+      doc: undefined,
+    })
+    await panel.start({ startMs: 50 })
+    listeners.get('foundation-error-event')?.({ detail: { component: 'usbip', code: 'usbip-setup-016.0xe0000247', severity: 'error' } })
+    await panel.stop()
+    const errorEvent = calls.flatMap((b) => b.events).find((e) => e.kind === 'error')
+    assert.deepEqual(errorEvent, {
+      kind: 'error',
+      name: 'error',
+      props: { component: 'usbip', code: 'usbip-setup-016.0xe0000247', severity: 'error', count: 1 },
+    })
+  } finally { delete globalThis.sessionStorage; delete globalThis.localStorage }
+})
+
 test('the update source of the start record comes from the native side, which never answers empty: the used source, else the setting', async () => {
   globalThis.sessionStorage = { getItem: () => null, setItem: () => {} }
   globalThis.localStorage = { getItem: () => null, setItem: () => {} }

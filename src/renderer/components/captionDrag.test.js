@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 const source = readFileSync(new URL('./SidebarMenu.vue', import.meta.url), 'utf8')
 
 test('the caption bar is a deep drag region', () => {
-  assert.match(source, /<MCaption bem="panel-caption" data-tauri-drag-region="deep" @pointerdown="onTouchWindowDragStart">/)
+  assert.match(source, /<MCaption bem="panel-caption" more bar-more :more-label="t\.m3e\.nav\.moreTitle" data-tauri-drag-region="deep" @pointerdown="onTouchWindowDragStart" @more="moreOpen = true">/)
 })
 
 test('no caption control opts out of being clickable by carrying the drag attribute', () => {

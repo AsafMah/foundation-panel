@@ -1,7 +1,7 @@
 <template>
   <div class="m-app m-app--scroll panel-shell">
     <!-- slim caption bar over the whole window: draggable, the window controls at the end; the pages start below it -->
-    <MCaption bem="panel-caption" data-tauri-drag-region="deep" @pointerdown="onTouchWindowDragStart">
+    <MCaption bem="panel-caption" more bar-more :more-label="t.m3e.nav.moreTitle" data-tauri-drag-region="deep" @pointerdown="onTouchWindowDragStart" @more="moreOpen = true">
       <template v-if="backButton" #back><MCaptionBack :page="backPage" :locale="locale" @back="jumps.back()" /></template>
       <template #version><MCaptionVersion :version="currentVersion" :build="buildInfo" :os="osName()" :locale="locale" :update="notice.version" @copied="onVersionCopied" @open-update="openUpdates" /></template>
       <template #brand><MBrand class="panel-caption__brand" :size="20" data-tauri-drag-region /></template>
@@ -11,7 +11,7 @@
       <template #controls><div class="panel-caption__controls">
         <button type="button" class="panel-caption__btn" :aria-label="t.sidebar.minimize" :data-tip="t.sidebar.minimize" @click="minimizeWindow"><MIcon name="remove" /></button>
         <button type="button" class="panel-caption__btn" :aria-label="isMaximized ? t.sidebar.restore : t.sidebar.maximize" :data-tip="isMaximized ? t.sidebar.restore : t.sidebar.maximize" @click="toggleMaximize"><MIcon :name="isMaximized ? 'filter_none' : 'crop_square'" /></button>
-        <button type="button" class="panel-caption__btn panel-caption__btn--close" :aria-label="t.sidebar.hideWindow" :data-tip="t.sidebar.hideWindow" @click="closeWindow"><MIcon name="close" /></button>
+        <button type="button" class="panel-caption__btn panel-caption__btn--close" :aria-label="t.sidebar.hideWindow" :data-tip="t.sidebar.hideWindow" data-panel-hide @click="hidePanel"><MIcon name="close" /></button>
       </div></template>
     </MCaption>
     <div class="panel-body">
@@ -58,7 +58,9 @@
           @webui-navigate="openWebUi"
           @open-guide="openWelcome"
           @open-remote="remoteOpen = true"
+          @open-reset="jumpTo(ROUTES.RESET)"
         />
+        <ResetSettingsPage v-else-if="entry.id === ROUTES.RESET" @back="back" />
         <DoctorPage v-else-if="entry.id === ROUTES.DOCTOR" :autostart="entry.params?.autostart || false" @go="goDoctorTarget" @restart="hostConn.restart('service')" @ai="askMita" />
         <MAnnouncementPage v-else-if="entry.id === ROUTES.ANNOUNCEMENTS" :items="announcements.list.value" :locale="locale" :acked-at="ackedAt" :open-id="entry.params?.id || ''" :on-refresh="() => announcements.refresh(true)" @dismiss="announcements.dismiss" @read="announcements.read" @open-url="actions_openExternal" @back="back" />
         <DevHub v-else-if="entry.id === ROUTES.DEV_HUB" :locale="locale" :pages="devHubPages" @open="(p) => openRoute(p.route)" />
@@ -103,6 +105,10 @@
     <MSheet v-model="moreOpen" :title="t.m3e.nav.moreTitle" side="end" :close-label="t.m3e.home.done">
       <div class="panel-more-version"><MBrand :size="20" /><MCaptionVersion :version="currentVersion" :build="buildInfo" :os="osName()" :locale="locale" :update="notice.version" @copied="onVersionCopied" @open-update="moreGo(openUpdates)" /></div>
       <MGroup>
+        <!-- what the caption bar has no room for (its tier, MCaption): in the order it has there -->
+        <MItem v-if="caption.tier.value >= 5" action icon="person_add" :title="connectT.title" :disabled="hostUnusable" @click="moreGo(() => connect.show('pair'))" />
+        <MItem v-if="caption.tier.value >= 4" action icon="notifications" :title="announcementTexts(locale).button" @click="moreGo(() => router.navigate(ROUTES.ANNOUNCEMENTS))" />
+        <MItem v-if="caption.tier.value >= 4" action icon="feedback" :title="feedbackTexts(locale).button" @click="moreGo(() => openFeedbackHere({}))" />
         <MItem action icon="search" :title="t.m3e.search" @click="moreGo(() => uni.show())" />
         <MItem action icon="settings" :title="t.m3e.nav.settings" :text="settingsList.lines.value.panel" :tone="notice.dot ? 'warn' : ''" @click="moreGo(() => onRail({ id: 'settings' }))" />
         <MItem v-if="developerMode.enabled.value" action icon="terminal" :title="devmodeTexts(locale).rail" @click="moreGo(() => router.navigate(ROUTES.DEV_HUB))" />
@@ -133,17 +139,18 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, getCurrentInstance, provide, ref, toRef, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, defineAsyncComponent, getCurrentInstance, nextTick, provide, ref, toRef, watch, onMounted, onBeforeUnmount } from 'vue'
 import { sunshine, sunshineService, tools, openExternalUrl } from '../tauri-adapter.js'
-import { SPONSORS } from '../config/sponsors.js'
+import { SPONSORS, sponsorUrl } from '../config/sponsors.js'
 import QRCode from 'qrcode'
 import { invoke } from '@tauri-apps/api/core'
 import { qrSvgDataUrl } from '../composables/qrSvg.js'
 import { audioDevicesChannel } from '../composables/deviceStatusStore.js'
 import { openBigScreenWithNotice } from '../composables/openBigScreen.js'
 import { installMenuPopup } from '../composables/menuPopup.js'
+import { installSearchShortcut } from '../composables/searchShortcut.js'
 import { installTrayTheme } from '../composables/trayTheme.js'
-import { MFeedbackButton, openFeedbackHere, askDevReport, devReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
+import { announcementTexts, feedbackTexts, MFeedbackButton, openFeedbackHere, askDevReport, devReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, resetTexts, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
 import { developerOverlays, developerTexts, DEFAULT_FLAGS } from 'foundation-ui/developer'
 import { SOURCE_KEY, afterCheck, afterOpened, noticeView, readNotice, writeNotice } from 'foundation-ui/update'
 import { createPanelTelemetry } from '../composables/panelTelemetry.js'
@@ -183,6 +190,7 @@ import LiveSessionPage from './m3e/LiveSessionPage.vue'
 import RtssPage from './m3e/RtssPage.vue'
 import NetworkOverviewPage from './m3e/NetworkOverviewPage.vue'
 import DiagnosticsPage from './m3e/DiagnosticsPage.vue'
+import ResetSettingsPage from './m3e/ResetSettingsPage.vue'
 import DoctorPage from './m3e/DoctorPage.vue'
 import { MITA_PENDING_PROMPT } from '../composables/useAiAssistant.js'
 import { useDeviceRuntime } from '../composables/useDeviceRuntime.js'
@@ -292,7 +300,7 @@ useSystemNotices({
   update: () => ({ state: updateInfo.value && !updateInfo.value.is_latest ? 'available' : '', next: updateInfo.value?.version || '' }),
 })
 const sponsorSections = computed(() => [
-  { title: t.value.m3e.home.sponsorTitle, items: SPONSORS.map((x) => ({ id: x.id, icon: 'favorite', title: x.label, url: x.url })) },
+  { title: t.value.m3e.home.sponsorTitle, items: SPONSORS.map((x) => ({ id: x.id, icon: 'favorite', title: x.label, url: sponsorUrl(x, locale.value) })) },
   { items: [{ id: 'star', icon: 'star', title: t.value.m3e.home.star, url: 'https://github.com/AlkaidLab/foundation-sunshine' }, { id: 'qq', icon: 'groups', title: t.value.m3e.home.qq, url: 'https://qm.qq.com/q/AfMQoyKrkc' }] },
 ])
 const actions_openExternal = (url) => openExternalUrl(url)
@@ -398,7 +406,7 @@ window.addEventListener('panel-force-host-state', forceHostState)
 window.addEventListener('panel-force-proxy-state', forceProxyState)
 onBeforeUnmount(() => { window.removeEventListener('panel-force-host-state', forceHostState); window.removeEventListener('panel-force-proxy-state', forceProxyState) })
 // the pages of the panel itself, which work without the host: 面板设置, 个性化, 帮助与关于, 公告 (from the announcement feed), the diagnostics, 米塔 AI, the guide
-const NEEDS_NO_HOST = new Set([ROUTES.DOCTOR, ROUTES.SUNSHINE_SERVICE, ROUTES.DEVELOPER, ROUTES.PANEL_SETTINGS, ...APPEARANCE_ROUTES, ROUTES.AI_ASSISTANT, ROUTES.HELP, ROUTES.ABOUT, ROUTES.ANNOUNCEMENTS, ROUTES.SETTINGS_HUB, ROUTES.DIAGNOSTICS, ROUTES.WELCOME, ROUTES.DEV_ISSUES, ROUTES.DEV_LOGS, ROUTES.DEV_API, ROUTES.DEV_FLAGS, ROUTES.DEV_BUILD, ROUTES.DEV_TESTS, ROUTES.DEV_HUB])
+const NEEDS_NO_HOST = new Set([ROUTES.DOCTOR, ROUTES.RESET, ROUTES.SUNSHINE_SERVICE, ROUTES.DEVELOPER, ROUTES.PANEL_SETTINGS, ...APPEARANCE_ROUTES, ROUTES.AI_ASSISTANT, ROUTES.HELP, ROUTES.ABOUT, ROUTES.ANNOUNCEMENTS, ROUTES.SETTINGS_HUB, ROUTES.DIAGNOSTICS, ROUTES.WELCOME, ROUTES.DEV_ISSUES, ROUTES.DEV_LOGS, ROUTES.DEV_API, ROUTES.DEV_FLAGS, ROUTES.DEV_BUILD, ROUTES.DEV_TESTS, ROUTES.DEV_HUB])
 // The host cannot be used for one of three causes, and the content area is then ONE status page (MScene status): the host is down, it runs and does not answer, or the panel's own proxy does not answer the window.
 // The rail and the caption bar stay: the pages of the panel itself (NEEDS_NO_HOST) still work and open as always. What needs the host does not look live: the pages give way to the status page and are inert, the
 // frame stays mounted but hidden, so an unsaved edit is there when the connection is back, and 连接设备 (it pairs through the host) is disabled.
@@ -467,7 +475,7 @@ const railLabel = (id) => (id === 'developer' ? devmodeTexts(locale.value).rail 
 const developerMode = useDeveloperMode()
 const devActivity = useDevActivity() // the dot of the 开发者 rail: something new in the host's repository since the last look at Issue 与 PR
 watch(developerMode.enabled, (on) => { if (on) { developerOverlays(); devActivity.start() } else if (!on) { devActivity.stop(); developerOverlays().set({ ...DEFAULT_FLAGS }); if (nav.rail.value === 'developer') leaveDeveloper() } }, { immediate: true })
-const runtimeView = computed(() => ({ ...runtime, developer: developerMode.enabled.value, dev: devmodeTexts(locale.value), developerTitle: developerTexts(locale.value).title, rtssInstalled: rtssInstalled.value === true, lines: settingsList.lines.value, statusTitle: statusTexts(locale.value).title, serviceTitle: serviceTexts(locale.value).title, diagTitle: diagnosticsTexts(locale.value).title, doctorTitle: doctorTexts(locale.value).title }))
+const runtimeView = computed(() => ({ ...runtime, developer: developerMode.enabled.value, dev: devmodeTexts(locale.value), developerTitle: developerTexts(locale.value).title, rtssInstalled: rtssInstalled.value === true, lines: settingsList.lines.value, statusTitle: statusTexts(locale.value).title, serviceTitle: serviceTexts(locale.value).title, diagTitle: diagnosticsTexts(locale.value).title, doctorTitle: doctorTexts(locale.value).title, resetTitle: resetTexts(locale.value).title }))
 const listItems = (id) => pageItems(t.value, id, runtimeView.value)
 // The stream settings are the shared model (categories in groups with a live line, search of every setting, recently used)
 const hostConfig = ref(null)
@@ -518,7 +526,8 @@ const currentRow = computed(() => {
 const settingsPlace = (e) => (e.params?.tab === 'display' || e.params?.tab === 'audio' || e.params?.tab === 'input' ? '' : railLabel('config'))
 const searchItems = computed(() => [
   ...Object.keys(PAGES)
-    .filter((id) => PAGES[id].list !== false)
+    // 恢复默认设置 is found as an action (resetSettings): the page is not a second result of the same name
+    .filter((id) => PAGES[id].list !== false && id !== ROUTES.RESET)
     .flatMap((id) => {
       const item = pageItems(t.value, PAGES[id].rail, runtimeView.value).find((p) => p.id === id)
       return item ? [{ id, title: item.label, path: railLabel(PAGES[id].rail), icon: item.icon, route: id, keywords: rowKeywords(ROW_OF_ROUTE[id]) }] : []
@@ -527,6 +536,8 @@ const searchItems = computed(() => [
   { id: ROUTES.AI_ASSISTANT, title: t.value.m3e.nav.assistant, path: t.value.m3e.nav.main, icon: 'smart_toy', route: ROUTES.AI_ASSISTANT, keywords: rowKeywords('assistant') },
   // 新手引导 is the page of the first run: found by its name and by what people type for it (it is a row of 帮助与关于 too)
   { id: ROUTES.WELCOME, title: guideTexts(locale.value).guide, path: railLabel('help'), icon: 'rocket_launch', route: ROUTES.WELCOME, keywords: 'guide welcome wizard first run setup 向导 引导 首次 新手' },
+  // the rail of the window itself (音频, 显示与视频 ...): found by its name; the ones that are pages of their own (米塔 AI, 设置, 帮助) are listed above
+  ...rail.value.filter((r) => ['overview', 'stream', 'config', 'input', 'audio', 'display', 'system'].includes(r.id)).map((r) => ({ id: `rail-${r.id}`, title: r.label, path: '', icon: r.icon, route: `rail-${r.id}`, railId: r.id, keywords: '' })),
   ...settingsList.searchItems.value,
 ])
 // ---- the unified search: one entry in the caption bar (an icon and a full-screen view on a narrow window) over everything a person can look for ----
@@ -584,6 +595,7 @@ const onFramePin = (event) => {
 }
 let unlistenConnect = null
 let unlistenFeedback = null
+let unlistenShowMessage = null
 let stopCrashWatch = null
 onMounted(async () => {
   pairing.start()
@@ -593,12 +605,16 @@ onMounted(async () => {
   try {
     const { listen } = await import('@tauri-apps/api/event')
     unlistenFeedback = await listen('open-feedback', () => { void openFeedbackHere({}) })
+    unlistenShowMessage = await listen('show-message', (event) => {
+      const msg = String(event?.payload?.message || '').trim()
+      if (msg) useNotify().snack(msg)
+    })
     if (await invoke('crash_recovered_ask').catch(() => false)) askDevReport('crash')
     // the answer (feedback sent, or let go) is what stops the question: a program that ends before it asks again at the next start
     stopCrashWatch = watch(() => devReport.decision, (now, was) => { if (was === 'crash' && !now) invoke('crash_recovered_answered').catch(() => {}) })
   } catch { /* not in the app window */ }
 })
-onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); if (unlistenFeedback) unlistenFeedback(); stopCrashWatch?.(); removeErrorHandlers?.() })
+onBeforeUnmount(() => { pairing.stop(); window.removeEventListener('message', onFramePin); if (unlistenConnect) unlistenConnect(); if (unlistenFeedback) unlistenFeedback(); if (unlistenShowMessage) unlistenShowMessage(); stopCrashWatch?.(); removeErrorHandlers?.() })
 onMounted(async () => { removeErrorHandlers = installErrorHandlers({ app: shellApp }); startAutoReport({ context: errorContext }); void refreshLogs(); void panelTelemetry.start({ startMs: typeof performance !== 'undefined' ? performance.now() : undefined }); await telemetry.refresh() })
 // what the buttons of 日志与诊断 do, from the search: the same host calls, the answer in the snackbar
 const hostAction = async (path, doneText, method = 'POST') => {
@@ -632,6 +648,7 @@ const actionHandlers = {
   quitHost: () => hostAction('/api/boom', diagnosticsTexts(locale.value).boom, 'GET'),
   openDesktop: () => openBigScreenWithNotice((m) => useNotify().snack(m), t.value.sidebar.openBigScreenFailed),
   doctor: () => openDoctor(),
+  resetSettings: () => jumpTo(ROUTES.RESET),
   // 反馈: the form of MErrorHost (mounted below, so it is always there); the help page has the same row
   feedback: () => { useErrors().reportFeedback() },
 }
@@ -644,12 +661,43 @@ const searchDocs = computed(() => [
 ])
 const recentSettingDocs = computed(() => settingDocs(settingsList.recentView.value.items.map((r) => r.entry), { prefix: settingsPlace, locale: locale.value }))
 const onUnifiedChoose = (doc) => jumps.jump(() => {
-  if (doc.type === 'setting' || doc.type === 'page') onSearch(doc.entry)
+  if (doc.type === 'page' && doc.entry?.railId) onRail({ id: doc.entry.railId })
+  else if (doc.type === 'setting' || doc.type === 'page') onSearch(doc.entry)
   else if (doc.type === 'client') { emit('webui-navigate', `/pin${filterHash(doc.client?.name || doc.title)}`); router.navigate(ROUTES.WEB_CLIENTS) }
   else if (doc.type === 'app') { emit('webui-navigate', `/apps${filterHash(doc.app?.name || doc.title)}`); router.navigate(ROUTES.WEB_APPS) }
   else if (doc.type === 'tile') { addTileToHome('panel-home', doc.tile); router.navigate(ROUTES.HOME) }
 })
-const uni = useUnifiedSearch({ docs: searchDocs, onPin: (doc) => pinToHome('panel-home', doc.pin), isPinned: (doc) => isPinnedOnHome('panel-home', doc.pin), recentSettings: recentSettingDocs, onChoose: onUnifiedChoose })
+const uni = useUnifiedSearch({ docs: searchDocs, onPin: (doc) => pinToHome('panel-home', doc.pin), isPinned: (doc) => isPinnedOnHome('panel-home', doc.pin), recentSettings: recentSettingDocs, onChoose: onUnifiedChoose, shortcuts: false })
+// the shared search judges a field by the event target, which is the host element of a Material field; this guard looks through the whole path
+let removeSearchShortcut = () => {}
+onMounted(() => { removeSearchShortcut = installSearchShortcut(uni) })
+onBeforeUnmount(() => removeSearchShortcut())
+let searchBeforeHide = null
+
+// Capture on Window before the search component handles the outside press
+// on Document (panel-memory-dom-dispatch, Dispatching events).
+function captureHideIntent(event) {
+  searchBeforeHide = event.button === 0 && event.target?.closest?.('[data-panel-hide]')
+    ? uni.query.value : null
+}
+function clearHideIntent() { searchBeforeHide = null }
+
+async function hidePanel(event) {
+  if (event.detail > 0 && searchBeforeHide !== null) uni.query.value = searchBeforeHide
+  clearHideIntent()
+  await nextTick()
+  await window.__panelViewState?.flush()
+  await closeWindow()
+}
+
+onMounted(() => {
+  window.addEventListener('pointerdown', captureHideIntent, true)
+  window.addEventListener('pointercancel', clearHideIntent, true)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', captureHideIntent, true)
+  window.removeEventListener('pointercancel', clearHideIntent, true)
+})
 // Where an error of the diagnostics page leads
 // 体检: the entries of help and search open it running; a fix leads to a setting row or a page of the panel; 米塔 AI gets the result
 // each press of 「开始体检」 carries its own token: the history entry keeps it, so Back from a fix finds the result instead of running every check again (MDoctor)
@@ -766,6 +814,7 @@ const onFrameMessage = (event) => {
   // DualSense transport that only the panel reads
   else if (data?.type === 'foundation-open' && data.page === 'controller-test') openGamepadTest()
   else if (data?.type === 'foundation-open' && data.page === 'components') router.navigate(ROUTES.COMPONENTS)
+  else if (data?.type === 'foundation-open' && data.page === 'reset') router.navigate(ROUTES.RESET)
   else if (data?.type === 'foundation-open' && data.page === 'hdr-enhanced') router.navigate(ROUTES.HDR_ENHANCED)
   else if (data?.type === 'foundation-ds5-status-request') pushDs5Status()}
 onMounted(() => { window.addEventListener('message', onFrameMessage); loadHostData(); componentStatus.start(60000); startPopupMenu() })
@@ -857,8 +906,7 @@ defineExpose({
 .panel-more-version .m-capver { margin-inline-start: 0; }
 .panel-caption__controls { display: flex; justify-self: end; }
 .panel-caption__search { display: flex; align-items: center; justify-content: center; min-width: 0; padding: 0 12px; }
-/* the caption bar of a phone is the Web UI's: the brand gives way (it was max-content and pushed the buttons out of a 360 px window), search and the action buttons touch (the shared icon sizes are m3e's layout.css) */
-@media (max-width: 599.98px) { .panel-caption { grid-template-columns: minmax(0, 1fr) auto auto; } .panel-caption__brand { min-width: 0; overflow: hidden; padding-inline-start: 12px; } .panel-caption__search { padding: 0; } }
+/* the caption bar of a phone (its grid, the brand giving way, the sizes and the gap of the buttons) is foundation-ui's (css/layout.css, `.m-caption[data-phone]`): the Web UI has the same bar. The three window buttons below are the control panel's alone. */
 .panel-caption__btn { display: grid; place-items: center; width: 46px; height: 48px; padding: 0; border: 0; background: transparent; color: var(--md-sys-color-on-surface); font-size: 18px; cursor: default; transition: background-color 120ms linear, color 120ms linear; }
 .panel-caption__btn:hover { background: color-mix(in srgb, var(--md-sys-color-on-surface) 9%, transparent); }
 .panel-caption__btn:active { background: color-mix(in srgb, var(--md-sys-color-on-surface) 14%, transparent); }

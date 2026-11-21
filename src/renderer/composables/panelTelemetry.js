@@ -22,7 +22,20 @@ export function createPanelTelemetry({ getBase, getVersion = async () => '', get
     sender,
     /** Once, when the shell is up: the version, the listeners, and the start of the panel (how long it took to show, and the update source setting). */
     async start({ startMs } = {}) {
-      removeListeners = installEventListeners(sender, win, doc)
+      const offListeners = installEventListeners(sender, win, doc)
+      const onErrorEvent = (event) => {
+        const detail = event?.detail || {}
+        sender.errorEvent({
+          component: detail.component || 'panel',
+          code: detail.code || 'unknown',
+          severity: detail.severity || 'error',
+        })
+      }
+      win?.addEventListener?.('foundation-error-event', onErrorEvent)
+      removeListeners = () => {
+        offListeners()
+        win?.removeEventListener?.('foundation-error-event', onErrorEvent)
+      }
       sender.setContext({ version: await getVersion() })
       sender.track.appStart({ startMs, updateSource: await getUpdateSource(), updateSourceMiss: await getUpdateSourceMiss() })
     },

@@ -52,7 +52,7 @@ pub(super) enum NotificationAction {
 pub(super) fn ensure_windows_notification_icon() -> Result<PathBuf, String> {
     WINDOWS_NOTIFICATION_ICON
         .get_or_init(|| {
-            let directory = dirs::data_local_dir()
+            let directory = crate::test_isolation::data_local_dir()
                 .ok_or_else(|| "Failed to resolve local application data directory".to_string())?
                 .join("Sunshine GUI");
             std::fs::create_dir_all(&directory).map_err(|error| {
@@ -113,10 +113,16 @@ pub(super) fn initialize<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 /// rest of the GUI notification surface. Tray menu state remains available
 /// even when native notifications are disabled.
 fn is_enabled() -> bool {
+    if crate::test_isolation::active() {
+        return false;
+    }
     crate::desktop_settings::load_desktop_settings_from_disk().notifications
 }
 
 fn connection_is_enabled() -> bool {
+    if crate::test_isolation::active() {
+        return false;
+    }
     let settings = crate::desktop_settings::load_desktop_settings_from_disk();
     settings.notifications && settings.connection_notify
 }

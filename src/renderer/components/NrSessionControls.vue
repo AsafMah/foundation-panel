@@ -38,6 +38,9 @@
     <p v-if="pending" class="quality-note" role="status">
       {{ overlayText.states[state] }}
     </p>
+    <p v-if="state === 'degraded'" class="quality-warning" role="status">
+      {{ degradedReason.main }}<br v-if="degradedReason.detail">{{ degradedReason.detail }}
+    </p>
     <p
       v-if="pipeline.nr_settings_failure_reason"
       class="quality-warning"
@@ -54,7 +57,7 @@ import { MLoading, MSliderItem, MSwitchItem, MSeg, MItem, MGroup, MSection, MBut
 import { invoke } from '@tauri-apps/api/core'
 import { useI18n } from '../desktop/i18n/index.js'
 import { enhancementControlsText } from '../composables/enhancementControls.js'
-import { nrOverlayText } from '../composables/nrOverlayMessages.js'
+import { nrDegradedReason, nrOverlayText } from '../composables/nrOverlayMessages.js'
 import { nrOverlayState } from '../composables/nrOverlayState.js'
 import { nrSessionRequest, nrResetRequest, focusLeaves, startsSliderEdit } from '../composables/nrSessionControls.js'
 const props = defineProps({
@@ -76,6 +79,7 @@ const state = computed(() => nrOverlayState(props.pipeline, props.online))
 const pending = computed(() =>
   ['warming_up', 'stopping', 'scaling'].includes(state.value)
 )
+const degradedReason = computed(() => nrDegradedReason(props.pipeline, overlayText.value))
 const canChange = computed(
   () =>
     props.online &&
@@ -118,7 +122,7 @@ async function commit(kind) {
 }
 const reset = () => run(() => nrResetRequest(props.pipeline, props.pipeline.id, props.online))
 const send = (patch, target) => run(() => nrSessionRequest(props.pipeline, target, patch, props.online))
-// every change is remembered for the next streams, as the overlay does (nr_live_remember); the app's own settings come first
+// parameters are remembered for the next streams (nr_live_remember); the on/off switch itself stays session-scoped
 async function run(build) {
   if (busy.value) return
   try {

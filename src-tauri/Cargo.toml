@@ -101,7 +101,9 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Ole",
     # Required by windows-rs for ShellExecuteExW/SHELLEXECUTEINFOW.
     "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
     "Win32_Security",
+    "Win32_Security_Authorization",
     # Credential Manager：CDK 的安全存储（CredWriteW/CredReadW/CredDeleteW）。
     "Win32_Security_Credentials",
     "Win32_Graphics_Dwm",

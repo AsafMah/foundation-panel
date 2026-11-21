@@ -113,3 +113,12 @@ test('a message with an id is replaced where it stands by the next call with tha
   assert.equal(snacks().length, 2)
   for (const s of [...snacks()]) useNotify().dismissSnack(s.id)
 })
+
+// The snackbar of the window must not start a second entrance when its enter class goes (the base .m-snackbar rule carries m-dialog-in): foundation-ui keeps the animation on the enter class only.
+test('the installed foundation-ui snackbar has no animation of its own, so a check for updates shows one entrance only', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const css = readFileSync(fileURLToPath(new URL('../css/notify.css', import.meta.resolve('foundation-ui/notify'))), 'utf8')
+  assert.match(css, /\.m-snackbar\[popover\] \{ animation: none; \}/)
+  assert.match(css, /\.m-snackbar\[popover\]\.m-snack-enter-active \{ animation: m-snack-in /)
+})

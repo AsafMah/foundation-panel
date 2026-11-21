@@ -82,7 +82,7 @@ fn snapshot(state: &OverlayState) -> SettingsStatus {
     }
 }
 fn path() -> Result<PathBuf, String> {
-    dirs::config_dir()
+    crate::test_isolation::config_dir()
         .map(|p| p.join("Sunshine GUI").join("enhancement-controls.json"))
         .ok_or("nr_settings_path".into())
 }

@@ -160,6 +160,7 @@ export function useEnhancementManager({ api, messages: text, runtimeName, onStat
     } catch (error) {
       operationError.value = String(error?.message || error)
       await refresh(true)
+      ElMessage.error(text.value.permissionSaveFailed || '功能设置未保存')
     } finally {
       operation.value = ''
     }

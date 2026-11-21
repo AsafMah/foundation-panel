@@ -3,6 +3,7 @@
     <section id="component-maintenance" ref="maintenance" class="panel-maint">
       <UsbTransportPanel :transport="transport" maintenance />
       <InputDriversPanel />
+      <VbCableComponentPanel />
     </section>
   </MComponentStatus>
 </template>
@@ -11,6 +12,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { MComponentStatus, registeredComponentStatus } from 'foundation-ui/vue'
 import InputDriversPanel from '../controllersHub/InputDriversPanel.vue'
+import VbCableComponentPanel from '../controllersHub/VbCableComponentPanel.vue'
 import UsbTransportPanel from '../controllersHub/UsbTransportPanel.vue'
 import { useUsbTransport } from '../../composables/useUsbTransport.js'
 

@@ -6,8 +6,8 @@ import { resolve, dirname } from 'node:path'
 
 // dev-env-npm: resolve the same immutable package as the application build.
 const root = resolve(dirname(fileURLToPath(import.meta.resolve('foundation-ui'))), '..')
-// the router only needs the back stack from the component index, which cannot load in Node
-const routerStub = 'data:text/javascript,' + encodeURIComponent(`export { createNav } from ${JSON.stringify(pathToFileURL(root + '/src/nav/backstack.js').href)}`)
+// the router only needs the back stack and the compact-navigation rule from the component index, which cannot load in Node
+const routerStub = 'data:text/javascript,' + encodeURIComponent(`export { createNav } from ${JSON.stringify(pathToFileURL(root + '/src/nav/backstack.js').href)}\nexport { isCompactNav } from ${JSON.stringify(pathToFileURL(root + '/src/nav/scenes.js').href)}`)
 const i18nStub = 'data:text/javascript,' + encodeURIComponent('export const useI18n = () => ({ t: { value: {} } })')
 const hook = `
 const i18nStub = ${JSON.stringify(i18nStub)}

@@ -26,6 +26,7 @@ mod elevation;
 mod file_mapping;
 mod file_transfer;
 mod file_upload_inbox;
+mod exit_state;
 mod fs_utils;
 mod gui_agent_exit;
 mod game_session;
@@ -34,7 +35,13 @@ mod host_facts;
 mod host_facts_math;
 mod host_version;
 mod hwinfo;
+mod install_integrity;
 mod logger;
+mod mem_adaptive;
+mod mem_adaptive_core;
+mod view_state;
+mod webview_env;
+mod webview_env_core;
 mod menu_place;
 mod moonlight_web;
 mod native_tools;
@@ -62,11 +69,14 @@ mod sunshine;
 mod version_compare;
 mod sunshine_service;
 mod system;
+mod test_isolation;
 mod system_load;
 mod system_load_core;
 mod text_encoding;
 #[cfg(target_os = "windows")]
 mod text_context;
+#[cfg(target_os = "windows")]
+mod touch_keyboard;
 mod toolbar;
 mod tray;
 mod tray_config;
@@ -76,6 +86,7 @@ mod usbip;
 mod utils;
 mod vdd;
 mod vdd_calibration;
+mod vb_cable;
 #[cfg(target_os = "windows")]
 mod vdd_ioctl;
 mod vigem;
@@ -113,24 +124,17 @@ fn configure_loopback_proxy_bypass() {
     // This runs before any helper path or async worker can create an HTTP
     // client, so every GUI-owned loopback request gets the same direct route.
     unsafe {
-        // A caller-provided value (for example --remote-debugging-port to trace
-        // a separately launched instance) stays in front of ours.
-        let mut browser_arguments = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .into_iter()
-            .collect::<Vec<_>>();
-        browser_arguments.extend([
-            // WebView2 uses Chromium's bypass syntax. Keep external requests on the
-            // user's configured proxy while forcing every loopback form to direct.
-            "--proxy-bypass-list=localhost;*.localhost;127.0.0.0/8;[::1]".to_owned(),
-            // UI 音效：手柄输入不属于「用户手势」，不解锁 AudioContext；
-            // 应用自身的导航反馈音不是网页自动播放媒体
-            "--autoplay-policy=no-user-gesture-required".to_owned(),
-        ]);
+        // A caller-provided value (for example --remote-debugging-port to trace a separately launched instance) stays in front of ours. A panel started by a panel (restart after a crash, the
+        // elevated restart, the updater's relaunch) inherits the value of its parent, which already holds our switches: they are not added twice, because a value that differs from the one the
+        // parent's browser process runs with makes WebView2 refuse the window (0x8007139F, webview_env.rs).
+        let inherited = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok();
+        let mut switches = webview_env_core::PANEL_SWITCHES.to_vec();
+        if crate::crash::fallback::software_rendering() {
+            switches.push(crate::crash::fallback::BROWSER_ARGUMENT);
+        }
         std::env::set_var(
             "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            browser_arguments.join(" "),
+            webview_env_core::merge_browser_arguments(inherited.as_deref(), &switches),
         );
 
         // reqwest follows NO_PROXY/no_proxy. Preserve the user's existing
@@ -151,48 +155,60 @@ fn configure_loopback_proxy_bypass() {
 }
 
 fn main() {
+    if let Err(error) = test_isolation::configure() {
+        eprintln!("Unable to initialize test isolation: {error}");
+        std::process::exit(2);
+    }
+
     #[cfg(target_os = "windows")]
     configure_loopback_proxy_bypass();
 
-    #[cfg(target_os = "windows")]
-    if let Some(exit_code) =
-        native_components::providers::nvidia_dlssnr::try_handle_elevated_command()
-    {
-        std::process::exit(exit_code);
-    }
-    if let Some(exit_code) =
-        native_components::providers::nvidia_rtx_hdr::try_handle_elevated_command()
-    {
-        std::process::exit(exit_code);
-    }
+    if !test_isolation::active() {
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) =
+            native_components::providers::nvidia_dlssnr::try_handle_elevated_command()
+        {
+            std::process::exit(exit_code);
+        }
+        if let Some(exit_code) =
+            native_components::providers::nvidia_rtx_hdr::try_handle_elevated_command()
+        {
+            std::process::exit(exit_code);
+        }
 
-    // Elevated SunshineService helper: one fixed verb, allowlisted operations.
-    #[cfg(target_os = "windows")]
-    if let Some(exit_code) = sunshine_service::try_handle_elevated_command() {
-        std::process::exit(exit_code);
-    }
+        // Elevated SunshineService helper: one fixed verb, allowlisted operations.
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) = sunshine_service::try_handle_elevated_command() {
+            std::process::exit(exit_code);
+        }
 
-    #[cfg(target_os = "windows")]
-    utils::wait_for_elevated_restart_handoff();
+        #[cfg(target_os = "windows")]
+        utils::wait_for_elevated_restart_handoff();
 
-    #[cfg(target_os = "windows")]
-    if let Some(exit_code) = usbip::try_handle_elevated_command() {
-        std::process::exit(exit_code);
-    }
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) = usbip::try_handle_elevated_command() {
+            std::process::exit(exit_code);
+        }
 
-    #[cfg(target_os = "windows")]
-    if let Some(exit_code) = vdd::try_handle_elevated_ioctl_command() {
-        std::process::exit(exit_code);
-    }
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) = vb_cable::try_handle_elevated_command() {
+            std::process::exit(exit_code);
+        }
 
-    if desktop_settings::try_remove_auto_start_from_args() {
-        return;
-    }
-    if update::try_run_updater_helper_from_args() {
-        return;
-    }
-    if sunshine::try_run_core_compatibility_check_from_args() {
-        return;
+        #[cfg(target_os = "windows")]
+        if let Some(exit_code) = vdd::try_handle_elevated_ioctl_command() {
+            std::process::exit(exit_code);
+        }
+
+        if desktop_settings::try_remove_auto_start_from_args() {
+            return;
+        }
+        if update::try_run_updater_helper_from_args() {
+            return;
+        }
+        if sunshine::try_run_core_compatibility_check_from_args() {
+            return;
+        }
     }
 
     // Panics, native crashes and WebView2 failures leave a report (crash/mod.rs); the upload waits for the start to be over.
@@ -205,7 +221,7 @@ fn main() {
 
     let builder = tauri::Builder::default();
 
-    let builder = if std::env::var_os("SUNSHINE_GUI_ALLOW_PARALLEL_INSTANCE").is_some() {
+    let builder = if test_isolation::active() || std::env::var_os("SUNSHINE_GUI_ALLOW_PARALLEL_INSTANCE").is_some() {
         builder
     } else {
         builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -213,24 +229,16 @@ fn main() {
         }))
     };
 
-    let application = builder
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_fs::init())
-        .setup(|app| {
-            // 初始化日志系统（需要在 setup 中获取 app handle）
-            logger::init_logger();
-            client_fingerprint_rules::start();
-            stall_watch::start(app.handle().clone());
-            info!("🚀 Sunshine Control Panel 启动中...");
-
-            app::setup_application(app)
-        })
-        .on_window_event(|window, event| {
-            windows::handle_window_event(window, event);
-        })
-        .invoke_handler(tauri::generate_handler![
+    let builder = if test_isolation::active() {
+        builder
+    } else {
+        builder
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+            .plugin(tauri_plugin_dialog::init())
+            .plugin(tauri_plugin_notification::init())
+            .plugin(tauri_plugin_fs::init())
+    };
+    let invoke_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             commands::toggle_dark_mode,
             commands::crash_recovered_ask,
             commands::crash_recovered_answered,
@@ -331,7 +339,11 @@ fn main() {
             controller_hub::save_controller_hub_config,
             controller_hub::get_virtual_microphone_status,
             controller_hub::get_audio_devices,
-            controller_hub::start_vb_cable_job,
+            vb_cable::vb_cable_check,
+            vb_cable::vb_cable_download,
+            vb_cable::vb_cable_install,
+            vb_cable::vb_cable_enable,
+            vb_cable::vb_cable_uninstall,
             controller_hub::test_virtual_microphone,
             controller_hub::save_microphone_backend,
             vigem::get_vigem_status,
@@ -346,6 +358,8 @@ fn main() {
             usbip::usbip_save_forwarding_config,
             usbip::usbip_install_transport,
             usbip::usbip_cleanup_transport,
+            usbip::usbip_remove_stale_nodes,
+            usbip::usbip_export_diagnostics,
             usbip::usbip_replace_legacy_transport,
             usbip::usbip_list_remote,
             usbip::usbip_attach,
@@ -375,6 +389,8 @@ fn main() {
             update::get_update_source_used,
             update::get_update_source_miss,
             update::download_update,
+            update::repair_installation_command,
+            install_integrity::install_integrity_status,
             update::download_update_status,
             update::check_cached_update,
             update::install_update,
@@ -407,6 +423,7 @@ fn main() {
             windows::webview_heartbeat,
             logger::frontend_slow,
             windows::panel_content_ready,
+            view_state::panel_state_save,
             ctx_popup::ctx_popup_loaded,
             ctx_popup::ctx_popup_open,
             ctx_popup::ctx_popup_ready,
@@ -426,6 +443,7 @@ fn main() {
             dev_tools::dev_capture_window,
             dev_tools::dev_clear_webview_cache,
             dev_tools::dev_reset_desktop_settings,
+            tray::reset_panel_preferences,
             dev_tools::dev_environment,
             windows::resize_tool_window,
             hdr_enhanced::nr_live_status,
@@ -434,6 +452,7 @@ fn main() {
             launch_splash::launch_splash_frame,
             launch_splash::launch_splash_prepared,
             launch_splash::launch_splash_painted,
+            launch_splash::launch_splash_selftest,
             nr_overlay::nr_overlay_capture_shortcut,
             nr_overlay::nr_overlay_settings,
             nr_overlay::nr_overlay_save_settings,
@@ -471,7 +490,27 @@ fn main() {
             tray::main_panel_ready,
             panel_page::take_pending_panel_page,
             start_guide::take_pending_start_guide,
-        ])
+        ];
+    let application = builder
+        .setup(|app| {
+            // 初始化日志系统（需要在 setup 中获取 app handle）
+            logger::init_logger();
+            client_fingerprint_rules::start();
+            stall_watch::start(app.handle().clone());
+            info!("🚀 Sunshine Control Panel 启动中...");
+
+            app::setup_application(app)
+        })
+        .on_window_event(|window, event| {
+            windows::handle_window_event(window, event);
+        })
+        .invoke_handler(move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+            if test_isolation::active() && !test_isolation::allows_command(invoke.message.command()) {
+                invoke.resolver.reject("Command is disabled in test isolation");
+                return true;
+            }
+            invoke_handler(invoke)
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
@@ -481,10 +520,13 @@ fn main() {
         } => api.prevent_exit(),
         // the application goes down: the menu window that is destroyed with the rest is not made again
         tauri::RunEvent::ExitRequested { code: Some(_), .. } => {
+            // every AppHandle::exit path falls through here: the exit is on from this moment
+            exit_state::begin("exit requested");
             ctx_popup::note_exiting();
             windows::hide_all_windows(app_handle);
         }
         tauri::RunEvent::Exit => {
+            exit_state::begin("exit");
             ctx_popup::note_exiting();
             windows::hide_all_windows(app_handle);
             native_tools::shutdown_all();

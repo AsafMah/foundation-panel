@@ -29,9 +29,7 @@ struct UpdatePreferences {
 }
 
 fn preferences_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
+    let app_data_dir = crate::test_isolation::app_data_dir(app)
         .map_err(|e| format!("获取应用数据目录失败: {e}"))?;
 
     if !app_data_dir.exists() {

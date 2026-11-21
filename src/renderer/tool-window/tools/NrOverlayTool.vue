@@ -22,7 +22,7 @@
           </div>
           <div class="live-state" aria-live="polite"><span class="dot" :class="state" />{{ text.states[state] }}</div>
           <p v-if="state === 'blocked'" class="notice">{{ pipeline?.backend !== 'none' ? text.hdrBusy : text.unsupported }}</p>
-          <p v-else-if="state === 'degraded'" class="notice">{{ text.fallback }}<br><small>{{ pipeline?.nr_reason }}</small></p>
+          <p v-else-if="state === 'degraded'" class="notice">{{ degradedReason.main }}<small v-if="degradedReason.detail"><br>{{ degradedReason.detail }}</small></p>
           <p v-else-if="['warming_up', 'stopping', 'scaling'].includes(state)" class="notice">{{ text.wait }}</p>
           <p v-if="error" class="notice error">{{ error }} <button @click="refresh">{{ text.retry }}</button></p>
           <div v-if="supportsControls" class="scale-control">
@@ -91,7 +91,7 @@ import { listen } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { useI18n } from '../../desktop/i18n/index.js'
 import { nrShortcutLabel, enhancementControlsText, enhancementError } from '../../composables/enhancementControls.js'
-import { nrOverlayText } from '../../composables/nrOverlayMessages.js'
+import { nrDegradedReason, nrOverlayText } from '../../composables/nrOverlayMessages.js'
 import { nrOverlayState, overlayOpacity, nrProcessingSize, nrPipelines, nrOutputLabel } from '../../composables/nrOverlayState.js'
 
 import { useTouchWindowDrag } from '../../composables/useTouchWindowDrag.js'
@@ -138,6 +138,7 @@ watch(selectedId, id => {
 })
 const pipeline = computed(() => pipelines.value.find(item => item.id === selectedId.value))
 const state = computed(() => nrOverlayState(pipeline.value, online.value))
+const degradedReason = computed(() => nrDegradedReason(pipeline.value, text.value))
 const compactLabel = computed(() => state.value === 'active' ? `NR · ${pipeline.value?.nr_scale_percent ?? 100}%` : text.value.states[state.value])
 const settled = ref(false)
 let settleTimer

@@ -14,9 +14,7 @@ static TOOLBAR_EXPANDED: AtomicBool = AtomicBool::new(false);
 
 // 获取工具栏配置文件路径
 fn get_toolbar_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
+    let app_data_dir = crate::test_isolation::app_data_dir(app)
         .map_err(|e| format!("获取应用数据目录失败: {}", e))?;
 
     // 确保目录存在
@@ -28,9 +26,7 @@ fn get_toolbar_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, St
 }
 
 fn get_tool_window_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
+    let app_data_dir = crate::test_isolation::app_data_dir(app)
         .map_err(|e| format!("failed to get app data directory: {}", e))?;
 
     if !app_data_dir.exists() {
@@ -370,7 +366,7 @@ pub fn create_tool_window_internal<R: Runtime>(app: &AppHandle<R>, tool_type: &s
     debug!("🔧 创建工具窗口 URL: {}", url);
 
     let mut builder =
-        tauri::WebviewWindowBuilder::new(app, tool_window_id, tauri::WebviewUrl::App(url.into()))
+        crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(app, tool_window_id, tauri::WebviewUrl::App(url.into())))
             .title(&title)
             .decorations(false)
             .transparent(true)
@@ -459,43 +455,14 @@ pub fn create_tool_window_internal<R: Runtime>(app: &AppHandle<R>, tool_type: &s
 
 // 处理工具栏菜单事件
 pub fn handle_toolbar_menu_event<R: Runtime>(app: &AppHandle<R>, event_id: &str) {
-    fn show_main_window<R: Runtime>(window: &tauri::WebviewWindow<R>) {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
-
-    fn ensure_main_window<R: Runtime>(app: &AppHandle<R>) -> Option<tauri::WebviewWindow<R>> {
-        // a main window that is being closed is not shown again: the request waits for the new one
-        if windows::closing::is_closing("main") {
-            windows::closing::after_closed(app, "main", |app| {
-                ensure_main_window(&app);
-            });
-            return None;
-        }
-        if let Some(window) = app.get_webview_window("main") {
-            show_main_window(&window);
-            Some(window)
-        } else {
-            if let Err(e) = windows::create_main_window(app) {
-                error!("❌ 创建主窗口失败: {}", e);
-                return None;
-            }
-            app.get_webview_window("main")
-        }
-    }
-
-    // the old tool windows of these items are pages of the main window now (renderer composables/panelParts.js); the request waits until
-    // the renderer takes it, so a main window that is only being created still opens the page (panel_page.rs)
     fn open_panel_page<R: Runtime>(app: &AppHandle<R>, page: &str) {
-        if let Some(window) = ensure_main_window(app) {
-            crate::panel_page::open_page(&window, page);
+        if let Err(error) = windows::open_main_panel_page(app, page) {
+            error!("Failed to open main panel page {page}: {error}");
         }
     }
-
     match event_id {
         "main" | "toolbar_main" => {
-            ensure_main_window(app);
+            windows::activate_main_window(app, None);
         }
         "vdd" | "toolbar_vdd" => open_panel_page(app, "vdd"),
         "dpi" | "toolbar_dpi" => open_panel_page(app, "desktop-scale"),
@@ -528,11 +495,11 @@ pub fn create_toolbar_window_internal<R: Runtime>(app: &AppHandle<R>) -> Result<
     // 窗口大小和边距配置
     let toolbar_size = 240.0; // 窗口大小（紧凑布局：80px 图标 + 80px 气泡半径 × 2）
     // 先创建窗口在默认位置
-    let window = match tauri::WebviewWindowBuilder::new(
+    let window = match crate::webview_env::adopt(tauri::WebviewWindowBuilder::new(
         app,
         TOOLBAR_WINDOW_ID,
         tauri::WebviewUrl::App("toolbar/index.html".into()),
-    )
+    ))
     .title("工具栏")
     .inner_size(toolbar_size, toolbar_size)
     .max_inner_size(toolbar_size, toolbar_size)

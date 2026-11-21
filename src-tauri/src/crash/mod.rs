@@ -12,6 +12,7 @@
 //! waits on anything the panel needs to start.
 
 mod asked;
+pub(crate) mod fallback;
 mod logpack;
 mod logscrub;
 mod meta;
@@ -108,10 +109,12 @@ fn os_version() -> String {
 
 fn pending_dir() -> PathBuf {
     // tests point the capture at a scratch folder with SUNSHINE_CRASH_DIR
-    if let Some(dir) = std::env::var_os("SUNSHINE_CRASH_DIR").filter(|v| !v.is_empty()) {
+    if !crate::test_isolation::active()
+        && let Some(dir) = std::env::var_os("SUNSHINE_CRASH_DIR").filter(|v| !v.is_empty())
+    {
         return PathBuf::from(dir);
     }
-    let base = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
+    let base = crate::test_isolation::data_local_dir().unwrap_or_else(std::env::temp_dir);
     meta::pending_dir_in(&base)
 }
 

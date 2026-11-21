@@ -123,8 +123,15 @@ export const controllerHub = {
 // the audio endpoints of the host and the VB-CABLE state (GET /api/audio/devices)
 export const audioDevices = {
   get: () => wrapResult('get_audio_devices'),
-  // 'install' (download, verify, silent setup) or 'enable' (pnputil); ask the person first
-  startVbCableJob: (action) => wrapResult('start_vb_cable_job', { action }),
+}
+
+// Component operations are separate: downloading never installs a driver.
+export const vbCable = {
+  check: () => wrapResult('vb_cable_check'),
+  download: () => wrapResult('vb_cable_download'),
+  install: () => wrapResult('vb_cable_install'),
+  enable: () => wrapResult('vb_cable_enable'),
+  uninstall: () => wrapResult('vb_cable_uninstall'),
 }
 
 export const virtualMicrophone = {
@@ -145,6 +152,8 @@ export const usbip = {
   getStatus: () => wrapResult('usbip_get_status'),
   installTransport: () => wrapResult('usbip_install_transport'),
   cleanupTransport: () => wrapResult('usbip_cleanup_transport'),
+  removeStaleNodes: () => wrapResult('usbip_remove_stale_nodes'),
+  exportDiagnostics: () => wrapResult('usbip_export_diagnostics'),
   replaceLegacyTransport: () => wrapResult('usbip_replace_legacy_transport'),
   listRemote: (remote, tcpPort = 3240) => wrapResult('usbip_list_remote', {
     remote,
