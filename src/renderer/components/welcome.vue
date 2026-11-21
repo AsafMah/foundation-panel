@@ -121,6 +121,8 @@ onMounted(async () => {
   const fromStart = consumeStartGuide()
   if (fromStart) clearProgress(null, GUIDE_STORAGE_KEY)
   await Promise.all([probeAccount(), telemetry.refresh(), panelVersion().then((v) => { version.value = v })])
+  // fork: the host sends no telemetry until the person turns it on; the first screen's notice says data is sent, so it is skipped while both choices are off
+  if (telemetry.consent.value === 'off' && telemetry.errors.value === 'off') telemetry.markErrorsNoticeSeen()
   if (state.account.exists) await Promise.all([callbacks.loadSetup?.(), callbacks.refreshClients?.(), loadGuideHost().then((h) => { hostProgress.value = h })])
   if (fromStart) {
     entry.value = { ...guideOnLaunch({ fromStart: true }), restart: true }

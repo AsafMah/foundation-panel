@@ -234,14 +234,22 @@ pub fn conf_value(text: &str, key: &str) -> String {
 }
 
 /// Error reports (so crash reports) may leave the computer unless the person turned them off: `telemetry_errors` decides when present,
-/// else an old `telemetry_consent = off` still means off, else on (foundation-ui/telemetry's rule).
+/// else an old `telemetry_consent = off` still means off, else the default (foundation-ui/telemetry's rule). The default is on in an
+/// official build and off in a fork build, as on the host (src/telemetry/fork_defaults.h): nothing leaves until the person turns it on.
 pub fn errors_enabled(conf_text: &str) -> bool {
+    errors_enabled_with(conf_text, !crate::release_source::FORK)
+}
+
+fn errors_enabled_with(conf_text: &str, default_on: bool) -> bool {
     let off = |v: &str| matches!(v.to_ascii_lowercase().as_str(), "off" | "false" | "0");
     let own = conf_value(conf_text, "telemetry_errors");
     if !own.is_empty() {
         return !off(&own);
     }
-    conf_value(conf_text, "telemetry_consent") != "off"
+    if conf_value(conf_text, "telemetry_consent") == "off" {
+        return false;
+    }
+    default_on
 }
 
 /// <base>/AlkaidLab/Sunshine Panel/crashes/pending
@@ -444,17 +452,30 @@ mod tests {
 
     #[test]
     fn consent_follows_telemetry_errors() {
-        assert!(errors_enabled(""));
-        assert!(errors_enabled("port = 47989\n"));
-        assert!(!errors_enabled("telemetry_errors = off\n"));
-        assert!(!errors_enabled("telemetry_errors=false"));
-        assert!(errors_enabled("telemetry_errors = on\n"));
-        assert!(!errors_enabled("telemetry_errors = on\ntelemetry_errors = off\n"));
-        assert!(!errors_enabled("# telemetry_errors = on\ntelemetry_errors = \"off\"\r\n"));
+        assert!(errors_enabled_with("", true));
+        assert!(errors_enabled_with("port = 47989\n", true));
+        assert!(!errors_enabled_with("telemetry_errors = off\n", true));
+        assert!(!errors_enabled_with("telemetry_errors=false", true));
+        assert!(errors_enabled_with("telemetry_errors = on\n", true));
+        assert!(!errors_enabled_with("telemetry_errors = on\ntelemetry_errors = off\n", true));
+        assert!(!errors_enabled_with("# telemetry_errors = on\ntelemetry_errors = \"off\"\r\n", true));
         // an old no stays no until errors are turned on
-        assert!(!errors_enabled("telemetry_consent = off\n"));
-        assert!(errors_enabled("telemetry_consent = off\ntelemetry_errors = on\n"));
-        assert!(errors_enabled("telemetry_consent = ask\n"));
+        assert!(!errors_enabled_with("telemetry_consent = off\n", true));
+        assert!(errors_enabled_with("telemetry_consent = off\ntelemetry_errors = on\n", true));
+        assert!(errors_enabled_with("telemetry_consent = ask\n", true));
+    }
+
+    // Fork (AsafMah/foundation-sunshine): crash reports stay on this computer until the person turns error reports on; an explicit value wins.
+    #[test]
+    fn fork_build_sends_no_crash_report_by_default() {
+        if !crate::release_source::FORK {
+            return;
+        }
+        assert!(!errors_enabled(""));
+        assert!(!errors_enabled("port = 47989\n"));
+        assert!(!errors_enabled("telemetry_consent = on\n"));
+        assert!(errors_enabled("telemetry_errors = on\n"));
+        assert!(!errors_enabled("telemetry_errors = off\n"));
     }
 
     #[test]
