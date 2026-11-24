@@ -315,13 +315,44 @@ pub fn set_clipboard_files(_paths: &[PathBuf]) -> Result<(), String> {
     Err("file clipboard is only supported on Windows".to_string())
 }
 
+/// The XML of a plain `ToastGeneric` toast (title and body, no click action). Upstream dropped `tauri-winrt-notification`
+/// (foundation-panel #93); this keeps the upload notice on the same `windows` notifier without reaching into the tray's toast module.
+fn upload_toast_xml(title: &str, body: &str) -> String {
+    let escape = |raw: &str| {
+        let mut out = String::with_capacity(raw.len());
+        for ch in raw.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&apos;"),
+                c if (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r') => {}
+                c => out.push(c),
+            }
+        }
+        out
+    };
+    format!(
+        r#"<toast><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text></binding></visual></toast>"#,
+        escape(title),
+        escape(body)
+    )
+}
+
 #[cfg(windows)]
 fn notify(title: &str, body: &str) {
-    let result = tauri_winrt_notification::Toast::new("com.212333.app")
-        .title(title)
-        .text1(body)
-        .show();
-    if let Err(e) = result {
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+    use windows::core::HSTRING;
+
+    let show = || -> windows::core::Result<()> {
+        let document = XmlDocument::new()?;
+        document.LoadXml(&HSTRING::from(upload_toast_xml(title, body)))?;
+        let toast = ToastNotification::CreateToastNotification(&document)?;
+        ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from("com.212333.app"))?.Show(&toast)
+    };
+    if let Err(e) = show() {
         warn!("file upload toast failed: {e}");
     }
 }
@@ -517,6 +548,15 @@ pub fn handle_file_list(payload: Vec<u8>, sid: Option<u32>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn upload_toast_escapes_its_text() {
+        let xml = super::upload_toast_xml("a & <b>", "it's \"x\"\u{1}");
+        assert_eq!(
+            xml,
+            r#"<toast><visual><binding template="ToastGeneric"><text>a &amp; &lt;b&gt;</text><text>it&apos;s &quot;x&quot;</text></binding></visual></toast>"#
+        );
+    }
+
     use super::*;
 
     fn item(index: u64, name: &str, rel: &str, size: u64) -> ManifestItem {
