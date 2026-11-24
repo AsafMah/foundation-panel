@@ -286,7 +286,7 @@ const hostVdd = useHostVdd()
 const emit = defineEmits(['close', 'webui-navigate'])
 const dt = computed(() => displayTreeTexts(locale.value))
 const driverOpen = ref(false)
-const keepModel = computed({ get: () => hostVdd.store.mode.value === 'persistent', set: (on) => { void hostVdd.store.set({ vdd_keep_enabled: on }) } })
+const keepModel = computed({ get: () => vddOn(hostVdd.store.config.value?.vdd_keep_enabled), set: (on) => { void hostVdd.store.set({ vdd_keep_enabled: on }) } })
 // the state of the device card: the driver as the host reports it ('degraded' still works but asks for a repair)
 const deviceState = computed(() => (isDriverCheckPending.value ? 'checking' : vddStatus.state === 'degraded' ? 'degraded' : vddReady.value ? 'ready' : ['unknown', ''].includes(vddStatus.state) ? 'unknown' : 'missing'))
 // create or close the display now: the same tray actions the tray menu runs, through the host API

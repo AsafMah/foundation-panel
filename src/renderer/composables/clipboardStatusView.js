@@ -3,10 +3,14 @@
 
 const KNOWN_ERRORS = ['connect_refused', 'timeout', 'tls', 'http_401', 'http_403', 'http_5xx', 'stream_ended', 'credential_missing', 'heartbeat', 'other']
 
+// Where the host's clipboard_sync switch lives (设置 → 输入与外设 → 键盘): the status views open it,
+// so a person reading the status can reach the one setting that force-disables the sync.
+export const CLIPBOARD_SYNC_SETTING_PATH = '/config#tab=input&sub=keyboard&focus=clipboard_sync'
+
 /** The state of the sync as one of: off | disabled | unknown | connecting | degraded | disconnected | connected. */
 export function clipboardSyncState(status) {
   if (!status) return 'unknown'
-  if (!status.agent_active || status.transport_state === 'stopped') return 'off'
+  if (status.local_enabled === false || !status.agent_active || status.transport_state === 'stopped') return 'off'
   if (status.service_allowed === false) return 'disabled'
   if (status.transport_state === 'degraded') return 'degraded'
   if (status.transport_state === 'connecting') return 'connecting'
@@ -42,6 +46,7 @@ export function clipboardStatusView(status, texts, now = Date.now()) {
   const rows = []
   if (status) {
     rows.push({ id: 'agent', title: texts.agent, text: status.agent_active ? texts.running : texts.notRunning })
+    rows.push({ id: 'localSetting', title: texts.localSetting, text: status.local_enabled === true ? texts.localOn : status.local_enabled === false ? texts.localOff : texts.localUnknown })
     rows.push({ id: 'setting', title: texts.setting, text: status.service_allowed === true ? texts.settingOn : status.service_allowed === false ? texts.settingOff : texts.settingUnknown })
     rows.push({ id: 'host', title: texts.hostAgent, text: status.host_gui_alive === true ? texts.hostSees : status.host_gui_alive === false ? texts.hostDoesNotSee : texts.hostUnknown })
     rows.push({ id: 'heartbeat', title: texts.heartbeat, text: status.last_heartbeat_ok_ms ? agoText(status.last_heartbeat_ok_ms, now, texts) : texts.never })
@@ -56,6 +61,6 @@ export function clipboardStatusView(status, texts, now = Date.now()) {
 /** The part of the status the diagnostics bundle carries: fixed words, counts and times. The text of the last error (it can hold an address) stays out. */
 export function clipboardBundleFacts(status) {
   if (!status) return null
-  const { agent_active, service_allowed, transport_state, last_connected_at_ms, last_error_class, host_gui_alive, host_session_count, last_heartbeat_ok_ms, heartbeat_error, capability_error } = status
-  return { agent_active, service_allowed, transport_state, last_connected_at_ms, last_error_class, host_gui_alive, host_session_count, last_heartbeat_ok_ms, heartbeat_error, capability_error, state: clipboardSyncState(status) }
+  const { agent_active, local_enabled, service_allowed, transport_state, last_connected_at_ms, last_error_class, host_gui_alive, host_session_count, last_heartbeat_ok_ms, heartbeat_error, capability_error } = status
+  return { agent_active, local_enabled, service_allowed, transport_state, last_connected_at_ms, last_error_class, host_gui_alive, host_session_count, last_heartbeat_ok_ms, heartbeat_error, capability_error, state: clipboardSyncState(status) }
 }

@@ -218,7 +218,8 @@ fn build_status(
     let integrity_valid = manifest
         .as_ref()
         .is_some_and(|manifest| validate_version(&directory, manifest));
-    let enabled = selected_backend(&config.settings).as_deref() == Some(COMPONENT_ID);
+    let enabled = selected_backend(&config.settings).as_deref() == Some(COMPONENT_ID)
+        && (!IS_NR || config.settings.nr_enabled);
     let in_use = runtime_status
         .get("in_use")
         .and_then(serde_json::Value::as_bool)
@@ -764,16 +765,14 @@ pub async fn component_recover() -> Result<EnhancementComponentStatus, String> {
 }
 
 pub async fn component_set_enabled(enabled: bool) -> Result<EnhancementComponentStatus, String> {
+    status_for_config(save_component_enabled(enabled).await?).await
+}
+
+pub(crate) async fn save_component_enabled(enabled: bool) -> Result<crate::hdr_enhanced::ConfigState, String> {
     let _operation = COMPONENT_OPERATION
         .try_lock()
         .map_err(|_| "HDR-OP-001: another component operation is running".to_string())?;
-    let saved = select_backend_config(
-        || supported_config(),
-        |current| crate::hdr_enhanced::save_config(current, None),
-        enabled,
-    )
-    .await?;
-    status_for_config(saved).await
+    select_backend_config(supported_config, |current| crate::hdr_enhanced::save_config(current, None), enabled).await
 }
 
 async fn select_backend_config<Load, LoadFuture, Save, SaveFuture>(
@@ -795,6 +794,7 @@ where
         if enabled && !current.settings.backends.contains_key(COMPONENT_ID) {
             return Err("HDR-PKG-006: import the component before selecting it".to_string());
         }
+        if IS_NR { current.settings.nr_enabled = enabled; }
         *selected_backend_mut(&mut current.settings) = enabled.then(|| COMPONENT_ID.to_string());
         match save(current).await {
             Err(error) if error.starts_with("HDR-CFG-006:") && attempt < 2 => continue,
@@ -821,6 +821,7 @@ where
         if selected_backend(&current.settings).as_deref() == Some(COMPONENT_ID) {
             *selected_backend_mut(&mut current.settings) = None;
         }
+        if IS_NR { current.settings.nr_enabled = false; }
         current.settings.backends.remove(COMPONENT_ID);
         match save(current).await {
             Err(error) if error.starts_with("HDR-CFG-006:") && attempt < 2 => continue,
@@ -840,6 +841,7 @@ pub async fn component_uninstall() -> Result<EnhancementComponentStatus, String>
     if selected_backend(&current.settings).as_deref() == Some(COMPONENT_ID) {
         *selected_backend_mut(&mut current.settings) = None;
     }
+    if IS_NR { current.settings.nr_enabled = false; }
     // 先停止新会话使用；文件删除成功后再去掉版本记录，失败时仍保留卸载/修复入口。
     let saved = crate::hdr_enhanced::save_config(current, Some(&operation_id.id)).await;
     if let Err(error) = saved {
@@ -936,6 +938,7 @@ mod tests {
             schema_version: 2,
             selected_backend: Some("alkaidlab.nvidia_rtx_video".to_string()),
             selected_nr_backend: Some("alkaidlab.nvidia_dlssnr".to_string()),
+            nr_enabled: true,
             backends: Default::default(),
         };
         for id in [COMPONENT_ID, other] {
@@ -983,6 +986,7 @@ mod tests {
         } else {
             "alkaidlab.nvidia_dlssnr"
         };
+        assert_eq!(result.settings.nr_enabled, !IS_NR);
         assert_eq!(result.settings.backends[other].version, "2");
         let other_selection = if IS_NR {
             result.settings.selected_backend
@@ -1092,6 +1096,7 @@ mod tests {
                 schema_version: 1,
                 selected_backend: None,
                 selected_nr_backend: None,
+                nr_enabled: false,
                 backends: Default::default(),
             },
             etag: reqwest::header::HeaderValue::from_static("\"hdr-v1-test\""),
@@ -1110,6 +1115,7 @@ mod tests {
                 schema_version: 2,
                 selected_backend: None,
                 selected_nr_backend: None,
+                nr_enabled: false,
                 backends: Default::default(),
             },
             etag: reqwest::header::HeaderValue::from_static("\"hdr-v2-test\""),
@@ -1197,6 +1203,7 @@ mod tests {
                 schema_version: 1,
                 selected_backend: None,
                 selected_nr_backend: None,
+                nr_enabled: false,
                 backends: Default::default(),
             },
             etag: reqwest::header::HeaderValue::from_static("\"unused\""),

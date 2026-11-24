@@ -30,3 +30,9 @@ test('the Panel has no 退出登录 row: the WebUI keeps its own log out in a br
   assert.doesNotMatch(page, /logout/i)
   assert.doesNotMatch(page, /#logout/)
 })
+
+test('the sync features section exposes a local clipboard switch', () => {
+  assert.match(page, /clipboardSyncEnabled/)
+  assert.match(page, /saveDesktopSettings\(\{ \.\.\.desktopSettings\.value, clipboardSyncEnabled: Boolean\(enabled\) \}\)/)
+  assert.match(page, /<MSwitch :model-value="Boolean\(desktopSettings\.clipboardSyncEnabled\)"/)
+})

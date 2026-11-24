@@ -11,6 +11,11 @@ ManifestDPIAware true
 !include "FileFunc.nsh"
 !include "x64.nsh"
 
+; Same installer semantics, smaller file: NSIS defaults to non-solid zlib.
+; Solid LZMA packs the executable, the native plugin DLL and the WebView2
+; loader (when present) as one compressed stream. Sources: panel-nsis-setcompressor.
+SetCompressor /SOLID lzma
+
 !ifndef VERSION
   !define VERSION "0.0.0-dev"
 !endif

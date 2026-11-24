@@ -14,6 +14,7 @@ export const defaultDesktopSettings = {
   devMode: false,
   logLevel: 'info',
   textContextEnabled: true,
+  clipboardSyncEnabled: true,
   // a change of the monitor's scale gives the window its size in DIPs back (src-tauri windows/lifecycle/display.rs); no switch on a page yet: set in the settings file
   keepWindowSizeOnDpiChange: false,
 }
@@ -37,6 +38,11 @@ function persistLocal(settings) {
   } catch {
     // ignore storage failures
   }
+}
+
+/** The reason of a failed command: a Tauri command that returns Err(String) rejects with the bare string, not an Error. */
+export function failureReason(error) {
+  return String(error?.message || (typeof error === 'string' ? error : '')).trim()
 }
 
 function loadLocal() {

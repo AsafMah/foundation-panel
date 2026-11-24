@@ -653,7 +653,7 @@ fn is_chinese_locale(locale: &str) -> bool {
     locale.trim().to_ascii_lowercase().starts_with("zh")
 }
 
-async fn current_locale_is_chinese() -> bool {
+pub(crate) async fn current_locale_is_chinese() -> bool {
     crate::sunshine::get_sunshine_locale()
         .await
         .map(|locale| is_chinese_locale(&locale))
@@ -939,6 +939,43 @@ async fn fetch_cnb_catalog() -> Result<ReleaseCatalog, String> {
         latest: (!is_prerelease).then_some(candidate.clone()),
         pre_latest: is_prerelease.then_some(candidate),
         prerelease_unavailable: None,
+    })
+}
+
+/// What CNB lists on its releases page: the tag of its newest release and, when that release carries the installer `name`, the size and SHA-256
+/// CNB itself gives for it (not the ones of another source) with the address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CnbListing {
+    pub(crate) tag: String,
+    pub(crate) installer: Option<CnbInstaller>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CnbInstaller {
+    pub(crate) size: u64,
+    pub(crate) sha256: String,
+    pub(crate) url: String,
+}
+
+/// Asks CNB what it lists (one page and its checksum file). CNB syncs on its own clock: right after a release it can still list the previous one.
+pub(crate) async fn cnb_listing(name: &str) -> Result<CnbListing, String> {
+    let catalog = fetch_cnb_catalog().await?;
+    let candidate = catalog
+        .latest
+        .or(catalog.pre_latest)
+        .ok_or_else(|| "CNB 没有任何 Release".to_string())?;
+    let installer = candidate
+        .assets
+        .iter()
+        .find(|asset| asset.name == name)
+        .map(|asset| CnbInstaller {
+            size: asset.size,
+            sha256: asset.sha256.clone(),
+            url: asset.url.clone(),
+        });
+    Ok(CnbListing {
+        tag: candidate.version,
+        installer,
     })
 }
 

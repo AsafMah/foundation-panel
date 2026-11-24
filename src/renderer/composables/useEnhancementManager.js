@@ -1,4 +1,4 @@
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from './notifyMessage.js'
 import { open } from '@tauri-apps/plugin-dialog'
 import { openExternalUrl, sunshine } from '../tauri-adapter.js'
@@ -18,7 +18,10 @@ const emptyStatus = () => ({
 export function useEnhancementManager({ api, messages: text, runtimeName, onStatus }) {
   const status = ref(emptyStatus())
   const statusKnown = ref(false)
+  let disposed = false
+  onUnmounted(() => { disposed = true })
   const applyStatus = (data) => {
+    if (disposed) return
     status.value = { ...emptyStatus(), ...data }
     statusKnown.value = true
     onStatus?.(status.value)

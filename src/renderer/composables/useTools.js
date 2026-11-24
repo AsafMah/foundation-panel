@@ -471,7 +471,11 @@ export function useTools() {
       ElMessage.warning(msg.statusUnavailable)
       return
     }
-    if (!status.agent_active || status.transport_state === 'stopped') {
+    if (status.local_enabled === false) {
+      ElMessage.info(msg.disabledByUser)
+    } else if (status.transport_state === 'stopped') {
+      ElMessage.info(msg.inactive)
+    } else if (!status.agent_active) {
       ElMessage.warning(msg.agentInactive)
     } else if (status.service_allowed === false) {
       ElMessage.warning(msg.serviceDisabled)

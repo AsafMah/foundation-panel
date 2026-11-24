@@ -1,8 +1,8 @@
 <script setup>
 import { computed, onMounted, ref, unref, watch } from 'vue'
-import { useNotify, MButton, MDialog, MExpertItem, MFooter, MGroup, MIcon, MIconButton, MItem, MPathItem, MSection, MSeg, MSheet, MSnackbar, MSwitchItem, MSwitch, useAppearance } from 'foundation-ui/vue'
+import { useNotify, MButton, MChoiceItem, MDialog, MExpertItem, MFooter, MGroup, MIcon, MIconButton, MItem, MPathItem, MSection, MSeg, MSheet, MSnackbar, MSwitchItem, MSwitch, useAppearance } from 'foundation-ui/vue'
 import { useI18n } from '../../desktop/i18n/index.js'
-import { defaultDesktopSettings, desktopSettings, loadDesktopSettings, saveDesktopSettings } from '../../desktop/composables/useDesktopSettings.js'
+import { defaultDesktopSettings, desktopSettings, failureReason, loadDesktopSettings, saveDesktopSettings } from '../../desktop/composables/useDesktopSettings.js'
 import { bigScreenSettings, defaultBigScreenSettings, setBigScreenSetting } from '../../desktop/composables/useBigScreenSettings.js'
 import { useLaunchHelpers } from '../../desktop/composables/useLaunchHelpers.js'
 import { useDesktopPet } from '../../composables/useDesktopPet.js'
@@ -13,6 +13,7 @@ import { openBigScreenWithNotice } from '../../composables/openBigScreen.js'
 import { fillHint } from '../../desktop/composables/padGlyphs.js'
 import { padType } from '../../desktop/composables/padType.js'
 import { fileMapping, sunshine } from '../../tauri-adapter.js'
+import { DEFAULT_PIN_PROMPT, createPinPromptStore, pinPromptOptions } from '../../composables/pinPrompt.js'
 
 // Every option of the earlier desktop window, in the settings of the control panel: start up, notifications, the big screen
 // mode, the launch helpers (paths), shared folders, the desktop pet and, behind 高级, the developer and log options. Nothing
@@ -40,15 +41,26 @@ usePanelPart('helpers', () => open('helpers'))
 usePanelPart('sharing', () => openSharing())
 usePanelPart('expert', () => open('expert'))
 
+// where a pairing request asks for its PIN: the host's own setting, shared with the Web UI of the host (composables/pinPrompt.js)
+const pinPromptStore = createPinPromptStore({ proxyUrl: async () => { const ready = await sunshine.waitForProxyReady(); return ready?.success && ready.data ? ready.data : sunshine.getProxyUrl() } })
+const pinPrompt = ref(DEFAULT_PIN_PROMPT)
+const pinPromptChoices = computed(() => pinPromptOptions(st.value))
+async function setPinPrompt(value) {
+  const before = pinPrompt.value
+  pinPrompt.value = value
+  try { pinPrompt.value = await pinPromptStore.write(value) } catch (e) { pinPrompt.value = before; notice.value = `${st.value.saveError || st.value.updateError || ''} ${failureReason(e)}`.trim() }
+}
+
 onMounted(async () => {
   hasTauri.value = await isTauriRuntime()
+  void pinPromptStore.read().then((value) => { pinPrompt.value = value })
   loadDesktopLaunch()
   await loadDesktopSettings()
   if (sheet.value === 'sharing') loadMappings()
 })
 
 async function set(key, value) {
-  try { await saveDesktopSettings({ ...settings.value, [key]: value }) } catch (e) { notice.value = `${st.value.saveError || st.value.updateError || ''} ${e?.message || ''}`.trim() }
+  try { await saveDesktopSettings({ ...settings.value, [key]: value }) } catch (e) { notice.value = `${st.value.saveError || st.value.updateError || ''} ${failureReason(e)}`.trim() }
 }
 const startup = computed(() => [['autoStart', st.value.autoStart, st.value.autoStartDesc], ['startMinimized', st.value.startMinimized, st.value.startMinimizedDesc], ['autoStartSunshine', st.value.autoStartSunshine, st.value.autoStartSunshineDesc]])
 const notifications = computed(() => [['notifications', st.value.desktopNotifications, st.value.desktopNotificationsDesc], ['connectionNotify', st.value.connectionNotify, st.value.connectionNotifyDesc], ['updateNotify', st.value.updateNotify, st.value.updateNotifyDesc]])
@@ -234,6 +246,7 @@ const resetAll = async () => {
   <MSheet :model-value="sheet === 'notifications'" :title="st.notifications" side="end" :close-label="fs.close" @update:model-value="closeSheet">
     <MGroup>
       <MSwitchItem v-for="[key, name, info] in notifications" :key="key" :model-value="Boolean(settings[key])" :title="name" :info="info" :disabled="key === 'connectionNotify' && !settings.notifications" :data-panel-option="key" @update:model-value="set(key, $event)" />
+      <MChoiceItem :model-value="pinPrompt" icon="dialpad" :title="st.pinPrompt" :help="st.pinPromptDesc" :options="pinPromptChoices" :cancel-label="t.common.cancel" data-panel-option="pinPrompt" @update:model-value="setPinPrompt" />
     </MGroup>
   </MSheet>
   <MSheet :model-value="sheet === 'bigscreen'" :title="st.bigScreen" side="end" :close-label="fs.close" @update:model-value="closeSheet">

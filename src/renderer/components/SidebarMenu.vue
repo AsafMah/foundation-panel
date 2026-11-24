@@ -17,7 +17,7 @@
     <div class="panel-body">
     <MScene :nav="nav" :caption-height="48" :jumps="jumps" :chip="backChip" :rail-items="rail" :bar-items="bar" :bar-current="barCur" :texts="sceneTexts" :overlay="isWebPage || offlineShown" :status="offlineShown" storage-key="foundation-ui.panel.list" @rail="onRail">
       <template #back-chip><MBackChip :page="backPage" :locale="locale" @back="jumps.back()" /></template>
-      <template #rail-foot><MIconButton icon="palette" :label="appearanceLabel" :current="nav.rail.value === 'appearance'" @click="router.navigate(ROUTES.CFG_APPEARANCE)" /><MIconButton icon="info" :label="aboutTexts(locale).title" :current="router.currentRoute.value === ROUTES.ABOUT" @click="router.navigate(ROUTES.ABOUT, undefined, { root: true })" /><MSponsorButton :label="t.m3e.home.sponsor" :title="t.m3e.home.sponsorTitle" :sections="sponsorSections" :close-label="t.m3e.home.done" @open="(it) => actions_openExternal(it.url)" /></template>
+      <template #rail-foot><MIconButton icon="palette" :label="appearanceLabel" :current="nav.rail.value === 'appearance'" @click="router.navigate(ROUTES.CFG_APPEARANCE)" /><MIconButton icon="info" :label="aboutTexts(locale).title" :current="router.currentRoute.value === ROUTES.ABOUT" :badge="notice.dot ? 'dot' : ''" @click="router.navigate(ROUTES.ABOUT, undefined, { root: true })" /><MSponsorButton :label="t.m3e.home.sponsor" :title="t.m3e.home.sponsorTitle" :sections="sponsorSections" :close-label="t.m3e.home.done" @open="(it) => actions_openExternal(it.url)" /></template>
       <template #list="{ entry, scene }">
         <MNavList
           :groups="listGroups(entry.rail)"
@@ -85,6 +85,9 @@
           @open-guide="openWelcome"
           @open-remote="remoteOpen = true"
           @open-about="router.navigate(ROUTES.ABOUT)"
+          :update="helpUpdate"
+          @check-update="checkFromTile"
+          @open-update="openUpdateFromTile"
           @open-doctor="openDoctor"
         />
       </template>
@@ -113,7 +116,7 @@
         <MItem action icon="settings" :title="t.m3e.nav.settings" :text="settingsList.lines.value.panel" :tone="notice.dot ? 'warn' : ''" @click="moreGo(() => onRail({ id: 'settings' }))" />
         <MItem v-if="developerMode.enabled.value" action icon="terminal" :title="devmodeTexts(locale).rail" @click="moreGo(() => router.navigate(ROUTES.DEV_HUB))" />
         <MItem action icon="palette" :title="appearanceLabel" :text="settingsList.lines.value['config:appearance']" @click="moreGo(() => router.navigate(ROUTES.SETTINGS_HUB, { section: 'appearance' }))" />
-        <MItem action icon="info" :title="aboutTexts(locale).title" :text="currentVersion" @click="moreGo(() => router.navigate(ROUTES.ABOUT, undefined, { root: true }))" />
+        <MItem action icon="info" :title="aboutTexts(locale).title" :text="aboutLine(currentVersion, helpUpdate, helpTileTexts(locale))" @click="moreGo(() => router.navigate(ROUTES.ABOUT, undefined, { root: true }))" />
         <MItem action icon="help" :title="t.m3e.nav.help" :text="settingsList.lines.value.help" @click="moreGo(() => onRail({ id: 'help' }))" />
         <MItem action icon="favorite" :title="t.m3e.home.sponsor" @click="moreGo(() => { sponsorOpen = true })" />
       </MGroup>
@@ -150,9 +153,10 @@ import { openBigScreenWithNotice } from '../composables/openBigScreen.js'
 import { installMenuPopup } from '../composables/menuPopup.js'
 import { installSearchShortcut } from '../composables/searchShortcut.js'
 import { installTrayTheme } from '../composables/trayTheme.js'
-import { announcementTexts, feedbackTexts, MFeedbackButton, openFeedbackHere, askDevReport, devReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, resetTexts, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
+import { announcementTexts, feedbackTexts, MFeedbackButton, openFeedbackHere, askDevReport, devReport, DevSimChip, MContextProvider, contextTexts, pinSpecForPage, pinTexts, useTelemetryConsent, MErrorHost, installErrorHandlers, setErrorContext, startAutoReport, reportHostStop, reportHostHung, dismissHostHung, useNotify, useSystemNotices, useFeedbackReplies, MStatusBell, connectTexts, guideTexts, filterHash, MConnectDialog, MPairPrompt, pinToHome, unpinFromHome, isPinnedOnHome, createPairingPending, MSnackbar, useConnectDialog, MAnnouncementButton, MAnnouncementPage, MAnnouncementPopup, ackedAt, useAnnouncements, MCaption, MCoachMarks, MRemoteWindow, MUnifiedSearch, useUnifiedSearch, searchTexts, actionDocs, settingDocs, clientDocs, appDocs, tileDocs, addTileToHome, MHostOffline, useHostConnection, MSheet, MGroup, MItem, MSupportSheet, MBrand, MScene, MNavList, resetTexts, MCaptionVersion, MCaptionBack, MBackChip, useCaptionRoom, createJumpHistory, useBackVariant, showsButton, showsChip, captionTexts, MIconButton, MIcon, MContextMenu, aboutTexts, statusTexts, diagnosticsTexts, doctorTexts, useAnnouncementBadge, useSettingsList, useAppearance, registerModeHandler, MSponsorButton, scopeRecent, hostRecentKey, useErrors, useDeveloperMode, useDialogs, DevReportHost, DevHub, devmodeTexts, useDevActivity } from 'foundation-ui/vue'
 import { developerOverlays, developerTexts, DEFAULT_FLAGS } from 'foundation-ui/developer'
 import { SOURCE_KEY, afterCheck, afterOpened, noticeView, readNotice, writeNotice } from 'foundation-ui/update'
+import { updateTile, noticeAfterTile, helpTileTexts, aboutLine } from 'foundation-ui/help-tiles'
 import { createPanelTelemetry } from '../composables/panelTelemetry.js'
 import { panelVersion } from '../composables/panelVersion.js'
 import { SEARCH_INDEX } from '@settings-data'
@@ -207,7 +211,8 @@ import { proxyBlock } from '../composables/proxyBlock.js'
 import { hostData } from '../composables/hostData.js'
 import { createGuideData } from '../composables/guideData.js'
 import PanelPending from './PanelPending.vue'
-import { recordUpdateCheck } from '../composables/useUpdateCheckTime.js'
+import { helpUpdateView } from '../composables/helpUpdate.js'
+import { recordUpdateCheck, useUpdateCheckTime } from '../composables/useUpdateCheckTime.js'
 import { useHostReach } from '../composables/useHostReach.js'
 import { ROW_OF_ROUTE, railItems, pageItems, barItems, barCurrent } from '../composables/panelNav.js'
 import { rtssInstalled, readRtssInstall } from '../composables/rtssInstall.js'
@@ -235,7 +240,7 @@ registerModeHandler((mode) => setTheme(mode))
 onMounted(() => { void useAppearance().init() })
 // the overview has its own (lighter) frost over the wallpaper; every other page the stronger one
 watch(() => router.currentRoute.value, (route) => useAppearance().setScope(route === ROUTES.HOME ? 'home' : 'other'), { immediate: true })
-const { onTouchWindowDragStart } = useTouchWindowDrag(isMaximized)
+const { onTouchWindowDragStart } = useTouchWindowDrag(isMaximized, { onDoubleTap: toggleMaximize })
 const {
   openUrl, cleanupCovers, restartAsAdmin, checkForUpdates, openGamepadTest, openStylusInputProbe,
   showClipboardSyncStatus, initClipboardSyncStatus, clipboardSyncEnabled, clipboardSyncStateWord,
@@ -282,6 +287,8 @@ const handleCheckForUpdates = async (channel = null) => {
 const toolsCtx = {
   t, router, webuiPath: toRef(props, 'webuiPath'), openWebUi, openControllers, openUrl, openGamepadTest,
   openStylusInputProbe, cleanupCovers, restartAsAdmin, showClipboardSyncStatus, handleCheckForUpdates,
+  // the clipboard sync status opens the switch that force-disables the sync (设置 → 输入与外设 → 键盘)
+  openClipboardSyncSetting: () => jumpConfig({ tab: 'input', sub: 'keyboard', focus: 'clipboard_sync' }),
 }
 const toolsMenuItems = computed(() => createUtilityTools(toolsCtx))
 // the component status: one controller for the page and for the home cards the catalogue offers
@@ -299,6 +306,8 @@ useSystemNotices({
   go: { components: () => jumpTo(ROUTES.COMPONENTS), microphone: () => jumpTo(ROUTES.MICROPHONE), vdd: () => jumpTo(ROUTES.VDD_SETTINGS), update: () => { showUpdateDialog.value = true } },
   update: () => ({ state: updateInfo.value && !updateInfo.value.is_latest ? 'available' : '', next: updateInfo.value?.version || '' }),
 })
+// the developers' answers to the feedback this window sent go to the same status button (and open in the sheet DevReportHost draws)
+useFeedbackReplies({ locale })
 const sponsorSections = computed(() => [
   { title: t.value.m3e.home.sponsorTitle, items: SPONSORS.map((x) => ({ id: x.id, icon: 'favorite', title: x.label, url: sponsorUrl(x, locale.value) })) },
   { items: [{ id: 'star', icon: 'star', title: t.value.m3e.home.star, url: 'https://github.com/AlkaidLab/foundation-sunshine' }, { id: 'qq', icon: 'groups', title: t.value.m3e.home.qq, url: 'https://qm.qq.com/q/AfMQoyKrkc' }] },
@@ -318,6 +327,29 @@ watch(updateInfo, (info) => { if (info) remember(afterCheck(noticeState.value, {
 const updatesOpen = computed(() => router.currentRoute.value === ROUTES.PANEL_SETTINGS || router.currentRoute.value === ROUTES.ABOUT)
 watch([updatesOpen, () => notice.value.version], ([open]) => { if (open && noticeState.value.available) remember(afterOpened(noticeState.value)) }, { immediate: true })
 const openUpdates = () => { jumpTo(ROUTES.PANEL_SETTINGS) }
+// 软件更新 on the tile of 帮助与关于: the state of the check that already runs (notice: a version waits and is not skipped; updateInfo: a check answered; the person's own check on the tile: checking, or failed),
+// and the action on the tile: 检查更新 asks the one checker (its sheet shows the answer), 更新 opens the sheet. Pressing 更新 counts as opening the update: the dot goes out for that version.
+const tileChecking = ref(false)
+const tileFailed = ref(false)
+const lastUpdateCheck = useUpdateCheckTime()
+const helpUpdate = computed(() => helpUpdateView(
+  { checking: tileChecking.value, waiting: notice.value.waiting, failed: tileFailed.value, answered: !!updateInfo.value },
+  { installed: currentVersion.value, next: notice.value.version, checkedAt: lastUpdateCheck.at.value },
+))
+const checkFromTile = async () => {
+  if (tileChecking.value) return
+  tileChecking.value = true
+  tileFailed.value = false
+  try { tileFailed.value = !(await handleCheckForUpdates()) } catch { tileFailed.value = true } finally { tileChecking.value = false }
+}
+// an answer of the one checker (from the tile, from 面板设置, from the updater) ends a failure the tile kept
+watch(updateInfo, (info) => { if (info) tileFailed.value = false })
+// 更新 opens the sheet only when there is a whole answer to show (a window made again can remember a waiting version before the updater has answered): without one the one checker is asked first
+const openUpdateFromTile = async () => {
+  if (!updateInfo.value) { await checkFromTile(); if (!updateInfo.value) return }
+  remember(noticeAfterTile(noticeState.value, updateTile(helpUpdate.value, helpTileTexts(locale.value))))
+  showUpdateDialog.value = true
+}
 const onVersionCopied = (text) => useNotify().snack(text ? captionTexts(locale.value).copiedNote : captionTexts(locale.value).copyFailed)
 // ---- the global back: the places a person left by a jump (体检 → 网络, a home tile → its settings); the person's own moves clear it
 const jumps = createJumpHistory({
@@ -900,7 +932,7 @@ defineExpose({
 
 <style lang="less">
 .panel-shell { position: relative; height: 100vh; height: 100dvh; min-height: 0; overflow: clip; }
-.panel-caption { position: absolute; top: 0; left: var(--m-rail-w, 0px); right: 0; z-index: 40; transition: left var(--m-spring-default-spatial-duration, .4s) var(--m-spring-default-spatial, ease); display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, 560px) minmax(max-content, 1fr); align-items: stretch; height: 48px; background: transparent; user-select: none; }
+.panel-caption { position: absolute; top: 0; left: var(--m-rail-w, 0px); right: 0; z-index: 40; transition: left var(--m-spring-default-spatial-duration, .4s) var(--m-spring-default-spatial, ease); display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, 560px) minmax(max-content, 1fr); align-items: stretch; height: 48px; background: transparent; user-select: none; touch-action: none; }
 .panel-caption__brand { align-self: center; padding-inline-start: 16px; pointer-events: none; }
 .panel-more-version { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 4px 16px 12px; }
 .panel-more-version .m-capver { margin-inline-start: 0; }

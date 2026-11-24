@@ -40,6 +40,7 @@ mod logger;
 mod mem_adaptive;
 mod mem_adaptive_core;
 mod view_state;
+mod webview_cache_hygiene;
 mod webview_env;
 mod webview_env_core;
 mod menu_place;
@@ -60,10 +61,14 @@ mod hdr_enhanced;
 mod native_components;
 mod launch_splash;
 mod nr_overlay;
+mod notify_action;
 mod panel_page;
+mod pin_prompt;
+mod pin_window;
 #[cfg(target_os = "windows")]
 mod shell_context_menu;
 mod stall_watch;
+mod sparxie_open;
 mod start_guide;
 mod sunshine;
 mod version_compare;
@@ -155,6 +160,12 @@ fn configure_loopback_proxy_bypass() {
 }
 
 fn main() {
+    // The read-only probe also serves an isolated Panel, before any GUI or profile setup.
+    #[cfg(target_os = "windows")]
+    if let Some(code) = vb_cable::probe::handle_command() {
+        std::process::exit(code);
+    }
+
     if let Err(error) = test_isolation::configure() {
         eprintln!("Unable to initialize test isolation: {error}");
         std::process::exit(2);
@@ -319,6 +330,7 @@ fn main() {
             proxy_server::wait_for_proxy_ready,
             native_components::native_component_get_status,
             native_components::hdr_enhanced_select_backend,
+            native_components::set_global_nr_enabled,
             native_components::list_native_components,
             native_components::native_component_import,
             native_components::native_component_remove,
@@ -331,6 +343,7 @@ fn main() {
             utils::restart_as_admin,
             utils::is_running_as_admin,
             vdd::uninstall_vdd_driver,
+            vmouse::get_vmouse_support,
             vmouse::get_vmouse_status,
             vmouse::install_vmouse_driver,
             vmouse::uninstall_vmouse_driver,
@@ -360,6 +373,9 @@ fn main() {
             usbip::usbip_cleanup_transport,
             usbip::usbip_remove_stale_nodes,
             usbip::usbip_export_diagnostics,
+            usbip::usbip_restart_windows,
+            usbip::usbip_boot_secs,
+            usbip::usbip_driver_signature,
             usbip::usbip_replace_legacy_transport,
             usbip::usbip_list_remote,
             usbip::usbip_attach,
@@ -489,6 +505,8 @@ fn main() {
             tray::main_panel_loading,
             tray::main_panel_ready,
             panel_page::take_pending_panel_page,
+            pin_window::pin_pairing_client,
+            pin_window::pin_window_selftest,
             start_guide::take_pending_start_guide,
         ];
     let application = builder
@@ -496,6 +514,7 @@ fn main() {
             // 初始化日志系统（需要在 setup 中获取 app handle）
             logger::init_logger();
             client_fingerprint_rules::start();
+            webview_cache_hygiene::clear_stale_cache_at_startup(app.handle());
             stall_watch::start(app.handle().clone());
             info!("🚀 Sunshine Control Panel 启动中...");
 

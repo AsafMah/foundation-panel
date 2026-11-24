@@ -2,15 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
-// 反馈: a row in 帮助与关于 and an action of the search, both opening the form of MErrorHost (mounted for the whole window)
+// 反馈: a tile at the top of 帮助与关于 and an action of the search, both opening the form of MErrorHost (mounted for the whole window)
 const read = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8')
 
-test('帮助与关于 has the feedback row next to 开始体检, and the search can run 反馈', () => {
+test('帮助与关于 has the 反馈问题 tile with 软件更新, 主机体检 and 客户端下载 first, and the search can run 反馈', () => {
   const page = read('./ControlPanelPage.vue')
-  assert.match(page, /MFeedbackRow :locale="locale"/)
-  assert.ok(page.indexOf('doctorTexts(locale).start') < page.indexOf('<MFeedbackRow'), 'the row follows the health check row')
-  assert.match(page, /import \{[^}]*MFeedbackRow[^}]*\} from 'foundation-ui\/vue'/)
-  assert.equal((page.match(/<MFeedbackRow/g) || []).length, 1, 'one entry on the page, not two')
+  assert.match(page, /<MHelpTiles :locale="locale" :update="update" @check="emit\('check-update'\)" @open-update="emit\('open-update'\)" @doctor="emit\('open-doctor'\)" @downloads="emit\('webui-navigate', '\/downloads'\)" \/>/)
+  assert.match(page, /import \{[^}]*MHelpTiles[^}]*\} from 'foundation-ui\/vue'/)
+  assert.ok(page.indexOf('<MHelpTiles') < page.indexOf('<MItem action icon="info"'), 'the tiles come before the list')
+  assert.ok(!/<MFeedbackRow/.test(page), 'one entry for 反馈 on the page: the tile (it opens the same form)')
+  assert.ok(!/health_and_safety|icon="download"/.test(page), 'the rows the tiles stand for are gone from the list')
   const side = read('./SidebarMenu.vue')
   assert.match(side, /feedback: \(\) => \{ useErrors\(\)\.reportFeedback\(\) \}/)
   assert.match(side, /<MErrorHost :locale="locale"/, 'the form has a host in this window, so the row is always shown')
@@ -47,4 +48,12 @@ test('the tray menu opens the feedback panel, and a crash left by the previous r
   assert.match(rust('crash/mod.rs'), /pub\(crate\) fn mark_answered\(\)[\s\S]*asked::answered\(/, 'the answer is what is recorded: a report that stays pending (upload failed) does not bring the question back')
   assert.match(rust('main.rs'), /commands::crash_recovered_answered,/)
   assert.match(side, /watch\(\(\) => devReport\.decision, \(now, was\) => \{ if \(was === 'crash' && !now\) invoke\('crash_recovered_answered'\)/)
+})
+
+test('the developers\' answers to the feedback of this window go to the status button of the caption bar, once the window is up', () => {
+  const side = read('./SidebarMenu.vue')
+  assert.match(side, /import \{[^}]*useFeedbackReplies[^}]*\} from 'foundation-ui\/vue'/)
+  assert.equal((side.match(/useFeedbackReplies\(\{ locale \}\)/g) || []).length, 1, 'asked from one place')
+  assert.ok(side.indexOf('useSystemNotices({') < side.indexOf('useFeedbackReplies({ locale })'), 'after the component notices that share the bell')
+  assert.match(side, /<DevReportHost :locale="locale" \/>/, 'the sheet of an answer is drawn by the host that draws the feedback panel')
 })

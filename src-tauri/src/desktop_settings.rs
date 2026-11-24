@@ -52,6 +52,7 @@ pub struct DesktopSettings {
     pub log_level: String,
     pub toolbar_shortcut_enabled: bool,
     pub text_context_enabled: bool,
+    pub clipboard_sync_enabled: bool,
     /// A change of the monitor's scale gives the window its size in DIPs back (a virtual display that follows the client's resolution changes the scale; the window kept its pixels and shrank in DIPs). Off by default.
     pub keep_window_size_on_dpi_change: bool,
 }
@@ -70,6 +71,7 @@ impl Default for DesktopSettings {
             log_level: "info".to_string(),
             toolbar_shortcut_enabled: true,
             text_context_enabled: true,
+            clipboard_sync_enabled: true,
             keep_window_size_on_dpi_change: false,
         }
     }
@@ -380,6 +382,21 @@ pub async fn save_desktop_settings(
         let _ = save_desktop_settings_to_disk(&previous);
         return Err(error);
     }
+    if !crate::test_isolation::active()
+        && settings.clipboard_sync_enabled != previous.clipboard_sync_enabled
+    {
+        let result = crate::clipboard::set_enabled(settings.clipboard_sync_enabled);
+        if let Err(error) = result {
+            let _settings_guard = lock_desktop_settings();
+            let _ = save_desktop_settings_to_disk(&previous);
+            if let Err(rollback_error) = apply_auto_start(&previous) {
+                log::warn!(
+                    "Failed to restore auto-start after clipboard sync change failed: {rollback_error}"
+                );
+            }
+            return Err(error);
+        }
+    }
     #[cfg(target_os = "windows")]
     crate::text_context::set_enabled(settings.text_context_enabled);
     crate::tray::refresh_menu(&app);
@@ -600,6 +617,20 @@ mod tests {
             serde_json::from_str(r#"{"textContextEnabled":false}"#)
                 .expect("text context setting should deserialize");
         assert!(!disabled.text_context_enabled);
+    }
+
+    #[test]
+    fn clipboard_sync_is_enabled_by_default_and_migrates() {
+        assert!(DesktopSettings::default().clipboard_sync_enabled);
+
+        let settings: DesktopSettings = serde_json::from_str(r#"{"autoStart":false}"#)
+            .expect("legacy desktop settings should deserialize");
+        assert!(settings.clipboard_sync_enabled);
+
+        let disabled: DesktopSettings =
+            serde_json::from_str(r#"{"clipboardSyncEnabled":false}"#)
+                .expect("clipboard sync setting should deserialize");
+        assert!(!disabled.clipboard_sync_enabled);
     }
 
     #[test]

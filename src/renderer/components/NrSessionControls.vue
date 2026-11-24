@@ -1,13 +1,13 @@
 <template>
   <section class="live-controls" :aria-busy="busy || pending" @pointerdown.capture="pressEdit" @keydown.capture="pressEdit" @focusout="(event) => { if (focusLeaves(event.currentTarget, event.relatedTarget)) cancelEdit() }">
-    <div class="live-control-row">
+    <div v-if="showGlobal" class="live-control-row">
       <MSwitchItem
-        :model-value="!!pipeline.nr_requested_enabled"
+        :model-value="globalEnabled === true"
         icon="wand_stars"
         :title="text.liveTitle"
-        :text="text.liveHint"
-        :disabled="!canChange"
-        @update:model-value="(enabled) => send({ enabled }, pipeline.id)"
+        :text="text.nrPermissionHint"
+        :disabled="!online || globalEnabled == null || busy"
+        @update:model-value="setGlobal"
       >
         <template #extra><MLoading v-if="busy || pending" size="18px" /></template>
       </MSwitchItem>
@@ -62,7 +62,9 @@ import { nrOverlayState } from '../composables/nrOverlayState.js'
 import { nrSessionRequest, nrResetRequest, focusLeaves, startsSliderEdit } from '../composables/nrSessionControls.js'
 const props = defineProps({
   pipeline: { type: Object, required: true },
-  online: Boolean
+  online: Boolean,
+  globalEnabled: { type: Boolean, default: null },
+  showGlobal: { type: Boolean, default: true },
 })
 const emit = defineEmits(['changed', 'error'])
 const { locale } = useI18n()
@@ -122,7 +124,16 @@ async function commit(kind) {
 }
 const reset = () => run(() => nrResetRequest(props.pipeline, props.pipeline.id, props.online))
 const send = (patch, target) => run(() => nrSessionRequest(props.pipeline, target, patch, props.online))
-// parameters are remembered for the next streams (nr_live_remember); the on/off switch itself stays session-scoped
+async function setGlobal(enabled) {
+  if (busy.value) return
+  busy.value = true
+  try {
+    const savedEnabled = await invoke('set_global_nr_enabled', { enabled })
+    emit('changed', savedEnabled)
+  }
+  catch (e) { emit('error', String(e)) }
+  finally { busy.value = false }
+}
 async function run(build) {
   if (busy.value) return
   try {

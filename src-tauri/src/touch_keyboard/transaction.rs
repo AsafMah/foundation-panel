@@ -48,6 +48,8 @@ struct Snapshot {
     logon_time: i64,
     enabled: bool,
     values: Vec<Entry>,
+    /// `None` records that Windows had not published the runtime value
+    /// before the session; the session initialized it instead.
     notification_original: Option<u32>,
 }
 
@@ -93,10 +95,12 @@ pub(super) trait Registry {
 
 /// The runtime preference is session-scoped and may differ from the registry.
 /// Implementations must reject a different session and unsupported payloads.
+/// `read` returns `Ok(None)` when Windows has not published the state yet,
+/// which is normal before the first settings write after a reboot.
 pub(super) trait Notification {
     fn logon_time(&mut self, session_id: u32) -> io::Result<Option<i64>>;
     fn current_session(&mut self) -> io::Result<u32>;
-    fn read(&mut self, session_id: u32) -> io::Result<u32>;
+    fn read(&mut self, session_id: u32) -> io::Result<Option<u32>>;
     fn publish(&mut self, session_id: u32, value: u32) -> io::Result<()>;
 }
 
@@ -105,6 +109,20 @@ const NOTIFICATION_INDEX: usize = KEYS.len();
 
 fn notification_target(enabled: bool) -> u32 {
     if enabled { 2 } else { 0 }
+}
+
+/// Maps the durable registry preference to the runtime notification value.
+/// An absent registry value is the untouched Windows default ("Never"); a
+/// value outside 0..=2 cannot be mapped and leaves the runtime unchanged.
+fn derived_notification(value: Option<&RawValue>) -> Option<u32> {
+    let Some(value) = value else {
+        return Some(0);
+    };
+    let raw = match (value.kind, value.bytes.as_slice().try_into()) {
+        (4, Ok(bytes)) => u32::from_le_bytes(bytes),
+        _ => return None,
+    };
+    (raw <= 2).then_some(raw)
 }
 
 struct ParsedJournal {
@@ -124,9 +142,9 @@ fn parse_journal(bytes: &[u8]) -> io::Result<ParsedJournal> {
         .map_err(|_| invalid("touch keyboard journal snapshot is invalid"))?;
     let valid_version = snapshot.version == 1
         && snapshot.logon_time > 0
-        && snapshot
+        && !snapshot
             .notification_original
-            .is_some_and(|value| value <= 2);
+            .is_some_and(|value| value > 2);
     if !valid_version || snapshot.values.len() != KEYS.len() {
         return Err(invalid(
             "touch keyboard journal version or value count is invalid",
@@ -166,11 +184,7 @@ fn parse_journal(bytes: &[u8]) -> io::Result<ParsedJournal> {
             {
                 return Err(invalid("touch keyboard journal intent order is invalid"));
             }
-            if intent.index == NOTIFICATION_INDEX {
-                if snapshot.notification_original.is_none() {
-                    return Err(invalid("touch keyboard notification has no snapshot"));
-                }
-            } else {
+            if intent.index != NOTIFICATION_INDEX {
                 let target = desired(&snapshot, intent.index);
                 if target.is_none() || target == snapshot.values[intent.index].original {
                     return Err(invalid("touch keyboard journal intent has no write"));
@@ -288,15 +302,13 @@ impl<R: Registry, J: Journal, N: Notification> Transaction<R, J, N> {
 
     fn begin_locked(&mut self, enabled: bool, session_id: u32) -> io::Result<()> {
         // Probe before any write. An unavailable internal API must not leave
-        // registry-only changes that Windows never applies.
+        // registry-only changes that Windows never applies. `None` records
+        // an unpublished state; publishing below initializes it.
         let notification_original = self.notification.read(session_id)?;
         let logon_time = self
             .notification
             .logon_time(session_id)?
             .ok_or_else(|| io::Error::other("touch keyboard Windows session ended"))?;
-        if notification_original > 2 {
-            return Err(invalid("unsupported touch keyboard notification value"));
-        }
         let mut values = Vec::with_capacity(KEYS.len());
         for definition in &KEYS {
             let original = self.registry.read(definition.name)?;
@@ -319,7 +331,7 @@ impl<R: Registry, J: Journal, N: Notification> Transaction<R, J, N> {
             logon_time,
             enabled,
             values,
-            notification_original: Some(notification_original),
+            notification_original,
         };
         let snapshot_line = line(&snapshot)?;
         if snapshot_line.len() as u64 > MAX_JOURNAL_BYTES {
@@ -367,7 +379,7 @@ impl<R: Registry, J: Journal, N: Notification> Transaction<R, J, N> {
 
     fn publish_verified(&mut self, session_id: u32, value: u32) -> io::Result<()> {
         self.notification.publish(session_id, value)?;
-        if self.notification.read(session_id)? != value {
+        if self.notification.read(session_id)? != Some(value) {
             return Err(io::Error::other(
                 "touch keyboard notification readback mismatch",
             ));
@@ -446,18 +458,34 @@ impl<R: Registry, J: Journal, N: Notification> Transaction<R, J, N> {
             return Err(error);
         }
         if restore_notification && parsed.intents.contains(&NOTIFICATION_INDEX) {
-            let original = parsed
-                .snapshot
-                .notification_original
-                .ok_or_else(|| invalid("touch keyboard notification snapshot is missing"))?;
             let session_id = parsed.snapshot.session_id;
             let current = self.notification.read(session_id)?;
-            if current != original {
-                if current != notification_target(parsed.snapshot.enabled) {
-                    log::warn!("preserving externally changed touch keyboard notification");
-                } else {
-                    // Keep the journal if either publication or verification fails.
-                    self.publish_verified(session_id, original)?;
+            match parsed.snapshot.notification_original {
+                Some(original) => {
+                    if current != Some(original) {
+                        if current != Some(notification_target(parsed.snapshot.enabled)) {
+                            log::warn!("preserving externally changed touch keyboard notification");
+                        } else {
+                            // Keep the journal if either publication or
+                            // verification fails.
+                            self.publish_verified(session_id, original)?;
+                        }
+                    }
+                }
+                None => {
+                    // The session initialized an unpublished state. Restore
+                    // the runtime value from the durable registry preference.
+                    let target = notification_target(parsed.snapshot.enabled);
+                    if current == Some(target) {
+                        let current_registry_value =
+                            self.registry.read(&parsed.snapshot.values[0].name)?;
+                        match derived_notification(current_registry_value.as_ref()) {
+                            Some(derived) => self.publish_verified(session_id, derived)?,
+                            None => log::warn!("cannot derive the touch keyboard notification; leaving it unchanged"),
+                        }
+                    } else if current.is_some() {
+                        log::warn!("preserving externally changed touch keyboard notification");
+                    }
                 }
             }
         }

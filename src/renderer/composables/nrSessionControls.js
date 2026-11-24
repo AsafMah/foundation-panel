@@ -73,10 +73,10 @@ export function nrSessionRequest(pipeline, targetId, patch, online = true, { res
   return request
 }
 
-/** The request of 恢复 NR 默认值: switch off and put every option back (the options of controls version 3 only where the host has them). */
+/** The request of 恢复 NR 默认值: restore the processing parameters (the options of controls version 3 only where the host has them). */
 export function nrResetRequest(pipeline, targetId, online = true) {
   const version = pipeline?.nr_live_controls_version ?? 0
-  const patch = { enabled: false, ...NR_DEFAULTS }
+  const patch = { ...NR_DEFAULTS }
   if (!(version >= 3)) { delete patch.style; delete patch.skinStructureStrength; delete patch.autoMask }
   return nrSessionRequest(pipeline, targetId, patch, online, { reset: true })
 }

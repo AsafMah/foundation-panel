@@ -1,5 +1,6 @@
 import { computed, reactive } from 'vue'
 import { downloadView } from 'foundation-ui/update'
+import { belongsToUpdate, identityOf } from './updateSources.js'
 
 // The update transfer belongs to the Rust command, not to the sheet: closing
 // the sheet (or its window) must not stop it, and reopening the window must
@@ -16,6 +17,12 @@ const idle = () => ({
   fallbackReason: '',
   filename: '',
   path: '',
+  // the release the file (or the failure) belongs to: its tag and the SHA-256 of its installer
+  version: '',
+  sha256: '',
+  // sources that were left out for that release, and why (the native `skipped` list), and the sources that were tried and failed
+  skipped: [],
+  failed: [],
   errorCode: '',
   errorDetail: '',
   opened: true,
@@ -41,12 +48,21 @@ export function createUpdateDownload({ invoke, listen }) {
     if (typeof payload?.fallbackReason === 'string') state.fallbackReason = payload.fallbackReason
   }
 
-  /** Read the transfer that may already be running after a webview reload. */
-  const refresh = async () => {
+  /**
+   * Read the transfer that may already be running (or finished) after a webview reload or while the sheet was closed.
+   * `expected` is the update the sheet is offering now: the native task keeps the LAST download, which can be the installer of an earlier release,
+   * and a finished file of another release is not a download of this one (installing it fails, and repeating that never ends).
+   */
+  const refresh = async (expected) => {
     if (running) return
     try {
       const status = await invoke('download_update_status')
       if (!status || typeof status !== 'object') return
+      if (expected && !belongsToUpdate(status, expected)) {
+        // the status is about another release: nothing of it is shown for this one
+        reconcile(expected)
+        return
+      }
       const view = downloadView(status)
       const active = status.active === true
       if (!active && !view.downloaded && !state.path) return
@@ -54,6 +70,9 @@ export function createUpdateDownload({ invoke, listen }) {
         active,
         filename: status.filename || state.filename,
         path: status.path || state.path,
+        version: status.version || state.version,
+        sha256: status.sha256 || state.sha256,
+        skipped: Array.isArray(status.skipped) ? status.skipped : state.skipped,
         errorCode: active ? '' : state.errorCode,
         errorDetail: active ? '' : (status.error || state.errorDetail),
         fallbackReason: status.fallback_reason || '',
@@ -63,9 +82,32 @@ export function createUpdateDownload({ invoke, listen }) {
     }
   }
 
-  const start = async ({ url, fallbackUrl, filename, expectedSize, expectedSha256, assetType, targetVersion }) => {
+  /**
+   * Drops what the store holds when it belongs to another release than `expected` (a finished file, a "not from Mirror酱" reason, a failure).
+   * A transfer that is running is never touched. Returns true when something was dropped.
+   */
+  const reconcile = (expected) => {
+    if (state.active || running) return false
+    const holds = !!(state.path || state.fallbackReason || state.errorCode || state.skipped.length || state.sha256 || state.filename)
+    if (!holds) return false
+    const mine = state.sha256 || state.filename
+      ? belongsToUpdate({ sha256: state.sha256, filename: state.filename }, expected)
+      // a store that knows no identity (a file the cache check found has none yet) is kept only with its own check: see adoptCached
+      : false
+    if (mine) return false
+    Object.assign(state, idle(), { opened: state.opened })
+    return true
+  }
+
+  /** A verified installer that was already on disk (the native cache check matched its size and SHA-256 against `expected`). */
+  const adoptCached = (path, expected) => {
+    const identity = identityOf(expected)
+    Object.assign(state, { path, version: identity.version, sha256: identity.sha256, filename: identity.filename || state.filename })
+  }
+
+  const start = async ({ url, fallbackUrl, filename, expectedSize, expectedSha256, assetType, targetVersion, onlySource }) => {
     if (running) return { busy: true, ok: false }
-    Object.assign(state, idle(), { active: true, opened: false, filename })
+    Object.assign(state, idle(), { active: true, opened: false, filename, version: targetVersion || '', sha256: String(expectedSha256 || '').toLowerCase() })
     const task = (async () => {
       try {
         if (unlisten) unlisten()
@@ -78,6 +120,7 @@ export function createUpdateDownload({ invoke, listen }) {
           expectedSha256: expectedSha256 || null,
           assetType: assetType || null,
           targetVersion: targetVersion || null,
+          onlySource: onlySource || null,
         })
         if (result?.success) {
           state.path = result.file_path || ''
@@ -85,6 +128,9 @@ export function createUpdateDownload({ invoke, listen }) {
           state.downloadPhase = 'complete'
           state.progress = 1
           state.fallbackReason = result.fallback_reason || ''
+          state.skipped = Array.isArray(result.skipped) ? result.skipped : []
+          state.failed = []
+          if (result.source) state.source = String(result.source)
           state.errorCode = ''
           state.errorDetail = ''
           return { ok: true, path: state.path, cached: !!result.cached }
@@ -96,6 +142,8 @@ export function createUpdateDownload({ invoke, listen }) {
         state.active = false
         state.errorCode = codeOf(error) || 'download_failed'
         state.errorDetail = detailOf(error)
+        state.skipped = Array.isArray(error?.skipped) ? error.skipped : []
+        state.failed = Array.isArray(error?.failed) ? error.failed : []
         return { ok: false, errorCode: state.errorCode, error }
       } finally {
         if (unlisten) {
@@ -116,7 +164,7 @@ export function createUpdateDownload({ invoke, listen }) {
 
   const markOpened = () => { state.opened = true }
 
-  return { state, percent, visible, ready, start, refresh, discard, markOpened }
+  return { state, percent, visible, ready, start, refresh, reconcile, adoptCached, discard, markOpened }
 }
 
 let singleton = null

@@ -284,6 +284,76 @@ PDB requirements take precedence. Its ACL-based `removeUnusedCommands`
 option is a further candidate, but the current CI uses `cargo build` directly
 and not the CLI path that activates it; no saving from that option is claimed.
 
+## Round 3: where the remaining bytes are, and three measured cuts
+
+Baseline `2c61f17` (the tree behind v1.0.14, one autostart fix later), built by
+the same Windows job from one fork with create_release=false. All four
+measurement builds share the toolchain, the pinned foundation-ui revision and
+the pinned Foundation Sunshine settings data.
+
+| Build | Executable | xz -9e | Bundle zip | Component installer |
+| --- | ---: | ---: | ---: | ---: |
+| `2c61f17` (main) | 29,856,256 | 10,741,012 | 13,464,964 | 13,203,865 |
+| + public asset cleanup | 29,848,064 | | 13,460,466 | 13,198,290 |
+| + axum features | 29,792,256 | 10,712,196 | 13,442,813 | 13,179,106 |
+| + NSIS solid LZMA | 29,792,256 | | 13,442,816 | **11,025,403** |
+| total | **-64,000 (-0.21%)** | -28,816 | **-22,148 (-0.16%)** | **-2,178,462 (-16.5%)** |
+
+Executable section attribution of the baseline (PDB-checked, 98.07% of `.text`
+covered): `.text` 17,002,016 (own code 5,169,399; tokio 2,881,508; tauri
+2,472,805; core 1,320,173; std 641,874; regex-automata 298,054; serde_core
+293,327), `.rdata` 11,697,152 of which 4,904,189 are Brotli-9 asset streams
+(scripts 2,225,633 for 8.44 MB of text; WebP 1,375,318; PNG 839,122; WOFF2
+190,933; CSS 129,296 for 905,013 raw; ICO 83,605; JPEG 48,256), 4,454,140 are
+unwind-referenced contributions and 2.34 MB stay unattributed strings and
+constants. The shared script chunk alone carries about 936,000 CJK characters:
+translation and settings-label content, not library code, is what the
+JavaScript bytes are.
+
+What round 3 changed, each measured on its own build:
+
+- **The public mascot and template files were not costing executable bytes.**
+  `src/renderer/public/vivi/*` (8 files, 419,950 bytes) and `vite.svg` /
+  `vue.svg` were byte-identical to, or unreferenced next to, the hashed
+  foundation-ui assets. The measurement shows the executable lost only 8,192
+  bytes: the MSVC linker identical-COMDAT folding had already merged the
+  identical Brotli streams, so only the asset-map entries and path strings
+  disappeared. The files are removed anyway as dead sources, and the folding
+  behaviour is now documented instead of assumed.
+- **axum now builds with http1, json, tokio only.** The default form,
+  matched-path, original-uri, query, tower-log and tracing features compile
+  extractors and router layers nothing in this tree reads (no Form, Query,
+  MatchedPath or OriginalUri use exists). Executable -55,808, zip -17,653.
+  The Windows job ran the whole backend release test suite on this tree
+  (Test Tauri backend green).
+- **The component installer packs as solid LZMA.** NSIS defaults to non-solid
+  zlib; SetCompressor /SOLID lzma in sunshine-gui-component.nsi keeps the
+  installer behaviour and file set identical and takes the setup file from
+  13,179,106 to 11,025,403 bytes (-2.15 MB, -16.3%) on the same inputs. The
+  executable and bundle zip are unchanged by this item.
+
+Startup and memory were measured on a Windows 11 VM (both executables from
+these builds, alternating, 12 measured trials each after one discarded warm-up
+each, the application own SUNSHINE_GUI_TEST_ISOLATION profile and
+SUNSHINE_GUI_TEST_OFFSCREEN mode, warm WebView2 profile, window-handle creation
+and first pixel change of the off-screen window). The medians are equal within
+noise; the per-trial table is in the pull request.
+
+Not done, with reasons, for a decision:
+
+- The zip stays deflate: re-packing it with zopfli or LZMA needs a new build
+  dependency or a non-deflate codec inside a zip container, a packaging change
+  for the consuming installer, not a repository-local optimisation.
+- The remaining duplicates in the lock file (quick-xml 0.37/0.39, dirs 6/7,
+  time, small windows families) cost well under 100 KB together; unifying them
+  is an incompatible dependency bump, not a size fix.
+- panic = "abort" stays rejected (see round 2): threads must keep unwinding.
+- The foundation-ui mascot ships several display sizes and the wallpapers stay
+  lossy; both are content decisions.
+- pixi.js stays a whole-dependency import in the toolbar runtime; narrowing it
+  to subpath imports would change the frontend dependency graph for an
+  unmeasured saving.
+
 ## Reproduction and acceptance
 
 Run `node scripts/ci/analyze-panel-size.mjs <exe> <matching-pdb>` with

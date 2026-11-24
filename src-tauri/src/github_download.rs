@@ -87,15 +87,55 @@ enum DownloadErrorKind {
     SourcesExhausted,
 }
 
+/// Why one source did not deliver the file. `identity` is true when the source answered with a file that is not the
+/// one that was asked for (another size, another SHA-256): that source holds a different build than the release the
+/// person is installing, so it goes last the next time that release is downloaded. A refused connection or a timeout
+/// is not that: it may pass on the next try.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SourceFailure {
+    pub(crate) source: &'static str,
+    pub(crate) identity: bool,
+    pub(crate) detail: String,
+}
+
+/// The messages of this file that say the bytes (or their announced length) are not the expected file.
+const IDENTITY_FAILURE_PREFIXES: &[&str] = &[
+    "content length mismatch",
+    "content length exceeds",
+    "download exceeds the",
+    "download size mismatch",
+    "SHA-256 mismatch",
+];
+
+fn is_identity_failure(detail: &str) -> bool {
+    IDENTITY_FAILURE_PREFIXES
+        .iter()
+        .any(|prefix| detail.starts_with(prefix))
+}
+
 #[derive(Debug)]
 pub(crate) struct DownloadError {
     kind: DownloadErrorKind,
     detail: String,
+    failures: Vec<SourceFailure>,
 }
 
 impl DownloadError {
+    fn new(kind: DownloadErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+            failures: Vec::new(),
+        }
+    }
+
     pub(crate) fn is_setup(&self) -> bool {
         self.kind == DownloadErrorKind::Setup
+    }
+
+    /// One entry per source that was tried and did not deliver.
+    pub(crate) fn failures(&self) -> &[SourceFailure] {
+        &self.failures
     }
 }
 
@@ -356,36 +396,38 @@ where
     F: FnMut(DownloadProgress),
 {
     if candidates.is_empty() {
-        return Err(DownloadError {
-            kind: DownloadErrorKind::Setup,
-            detail: "no download candidates were provided".to_string(),
-        });
+        return Err(DownloadError::new(
+            DownloadErrorKind::Setup,
+            "no download candidates were provided",
+        ));
     }
     if request.expected_size == Some(0) || request.max_size == Some(0) {
-        return Err(DownloadError {
-            kind: DownloadErrorKind::Setup,
-            detail: "download size constraints must be greater than zero".to_string(),
-        });
+        return Err(DownloadError::new(
+            DownloadErrorKind::Setup,
+            "download size constraints must be greater than zero",
+        ));
     }
     if let Some(expected_sha256) = request.expected_sha256
         && normalize_sha256(expected_sha256).is_none()
     {
-        return Err(DownloadError {
-            kind: DownloadErrorKind::Setup,
-            detail: "expected SHA-256 must contain 64 hexadecimal characters".to_string(),
-        });
+        return Err(DownloadError::new(
+            DownloadErrorKind::Setup,
+            "expected SHA-256 must contain 64 hexadecimal characters",
+        ));
     }
     let mut sources = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        let parsed = reqwest::Url::parse(&candidate.url).map_err(|error| DownloadError {
-            kind: DownloadErrorKind::Setup,
-            detail: format!("invalid download candidate: {error}"),
+        let parsed = reqwest::Url::parse(&candidate.url).map_err(|error| {
+            DownloadError::new(
+                DownloadErrorKind::Setup,
+                format!("invalid download candidate: {error}"),
+            )
         })?;
         if parsed.scheme() != "https" {
-            return Err(DownloadError {
-                kind: DownloadErrorKind::Setup,
-                detail: "download candidates must use HTTPS".to_string(),
-            });
+            return Err(DownloadError::new(
+                DownloadErrorKind::Setup,
+                "download candidates must use HTTPS",
+            ));
         }
         sources.push(DownloadSource {
             name: candidate.name,
@@ -409,24 +451,22 @@ where
     F: FnMut(DownloadProgress),
 {
     if request.expected_size == Some(0) || request.max_size == Some(0) {
-        return Err(DownloadError {
-            kind: DownloadErrorKind::Setup,
-            detail: "download size constraints must be greater than zero".to_string(),
-        });
+        return Err(DownloadError::new(
+            DownloadErrorKind::Setup,
+            "download size constraints must be greater than zero",
+        ));
     }
     if let (Some(expected), Some(limit)) = (request.expected_size, request.max_size)
         && expected > limit
     {
-        return Err(DownloadError {
-            kind: DownloadErrorKind::Setup,
-            detail: format!("expected size {expected} exceeds the {limit}-byte limit"),
-        });
+        return Err(DownloadError::new(
+            DownloadErrorKind::Setup,
+            format!("expected size {expected} exceeds the {limit}-byte limit"),
+        ));
     }
 
-    let sources = build_download_sources(request.url).map_err(|detail| DownloadError {
-        kind: DownloadErrorKind::Setup,
-        detail,
-    })?;
+    let sources = build_download_sources(request.url)
+        .map_err(|detail| DownloadError::new(DownloadErrorKind::Setup, detail))?;
     download_from_sources(
         request,
         &sources,
@@ -449,17 +489,14 @@ where
         .overall_timeout
         .map(|timeout| Instant::now() + timeout);
     let mut errors = Vec::new();
+    let mut failures = Vec::new();
 
     for (index, source) in sources.iter().enumerate() {
         // The Windows proxy is resolved for this address: a PAC file can route
         // the CNB and GitHub hosts through different proxies.
         let proxy = crate::windows_proxy::resolve_for_url(&source.url).await;
-        let client = create_download_client(&request, client_policy, proxy.as_deref()).map_err(
-            |detail| DownloadError {
-                kind: DownloadErrorKind::Setup,
-                detail,
-            },
-        )?;
+        let client = create_download_client(&request, client_policy, proxy.as_deref())
+            .map_err(|detail| DownloadError::new(DownloadErrorKind::Setup, detail))?;
         let remaining_budget = match overall_deadline {
             Some(deadline) => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
@@ -501,6 +538,11 @@ where
             Err(error) => {
                 warn!("GitHub download source {} failed: {}", source.name, error);
                 errors.push(format!("{}: {error}", source.name));
+                failures.push(SourceFailure {
+                    source: source.name,
+                    identity: is_identity_failure(&error),
+                    detail: error,
+                });
                 let _ = tokio::fs::remove_file(request.destination).await;
                 if overall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     break;
@@ -509,10 +551,12 @@ where
         }
     }
 
-    Err(DownloadError {
-        kind: DownloadErrorKind::SourcesExhausted,
-        detail: format!("all download sources failed: {}", errors.join("; ")),
-    })
+    let mut error = DownloadError::new(
+        DownloadErrorKind::SourcesExhausted,
+        format!("all download sources failed: {}", errors.join("; ")),
+    );
+    error.failures = failures;
+    Err(error)
 }
 
 #[cfg(test)]
@@ -703,6 +747,86 @@ mod tests {
         assert_eq!(outcome.source, "right");
         assert_eq!(tokio::fs::read(&destination).await.unwrap(), b"asset");
         let _ = tokio::fs::remove_file(&destination).await;
+        server.abort();
+    }
+
+    /// A source that holds another build of the file (another size, another SHA-256) is told apart from a source that did not answer:
+    /// the first goes behind the others on the next try, the second is simply tried again.
+    #[tokio::test]
+    async fn size_and_hash_mismatches_are_told_apart_from_an_unreachable_source() {
+        let app = Router::new()
+            .route(
+                "/previous-build",
+                get(|| async { ([("content-type", "application/octet-stream")], "old-build-bytes") }),
+            )
+            .route(
+                "/same-size-other-bytes",
+                get(|| async { ([("content-type", "application/octet-stream")], "asseX") }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        // a port nothing listens on: the connection is refused
+        let closed = {
+            let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            probe.local_addr().unwrap()
+        };
+        let destination = std::env::temp_dir().join(format!(
+            "sunshine-github-download-identity-test-{}-{}.partial",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let expected = format!("{:x}", Sha256::digest(b"asset"));
+        let request = DownloadRequest {
+            url: "https://github.com/example/project/releases/download/v1/a.zip",
+            destination: &destination,
+            expected_size: Some(5),
+            expected_sha256: Some(&expected),
+            max_size: Some(5),
+            user_agent: "test",
+            connect_timeout: Duration::from_secs(1),
+            response_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_secs(1),
+            overall_timeout: None,
+        };
+        let sources = [
+            DownloadSource {
+                name: "previous-build",
+                url: format!("http://{address}/previous-build"),
+            },
+            DownloadSource {
+                name: "other-bytes",
+                url: format!("http://{address}/same-size-other-bytes"),
+            },
+            DownloadSource {
+                name: "refused",
+                url: format!("http://{closed}/asset"),
+            },
+        ];
+        let error = download_from_sources(
+            request,
+            &sources,
+            DownloadClientPolicy::AllowHttpForTests,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+        let failures: Vec<_> = error
+            .failures()
+            .iter()
+            .map(|failure| (failure.source, failure.identity))
+            .collect();
+        assert_eq!(
+            failures,
+            [("previous-build", true), ("other-bytes", true), ("refused", false)]
+        );
+        assert!(!destination.exists(), "a mismatching file must not stay behind");
         server.abort();
     }
 

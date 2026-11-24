@@ -4,7 +4,7 @@ import { clipboardBundleFacts, clipboardStatusView, clipboardSyncState, clipboar
 
 const texts = {
   never: 'never', secondsAgo: '{n} s ago', minutesAgo: '{n} min ago', running: 'running', notRunning: 'not running',
-  agent: 'Agent', setting: 'Setting', settingOn: 'on', settingOff: 'off', settingUnknown: 'unknown', hostAgent: 'Host', hostSees: 'sees', hostDoesNotSee: 'does not see', hostUnknown: '?',
+  agent: 'Agent', setting: 'Setting', settingOn: 'on', settingOff: 'off', settingUnknown: 'unknown', localSetting: 'Panel', localOn: 'on', localOff: 'off', localUnknown: 'unknown', hostAgent: 'Host', hostSees: 'sees', hostDoesNotSee: 'does not see', hostUnknown: '?',
   heartbeat: 'Heartbeat', heartbeatError: 'Heartbeat failure', lastError: 'Last failure', capabilityError: 'Setting not readable', lastConnected: 'Connected',
   states: { connected: 'Connected', degraded: 'Degraded', disconnected: 'Disconnected', connecting: 'Connecting', disabled: 'Off in the host', off: 'Not running', unknown: 'Unknown' },
   errors: { connect_refused: 'refused', timeout: 'timeout', tls: 'tls', http_401: '401', http_403: '403', http_5xx: '5xx', stream_ended: 'ended', credential_missing: 'no credential', heartbeat: 'heartbeat', other: 'other' },
@@ -35,6 +35,14 @@ test('the other states keep their order of precedence', () => {
   assert.equal(clipboardSyncState({ ...base, service_allowed: false }), 'disabled')
   assert.equal(clipboardSyncState({ ...base, transport_state: 'connecting' }), 'connecting')
   assert.equal(clipboardSyncState({ ...base, transport_state: 'disconnected' }), 'disconnected')
+})
+
+test('a local preference off state is shown as off even when an old transport fact remains', () => {
+  const status = { ...base, local_enabled: false, transport_state: 'connected' }
+  assert.equal(clipboardSyncState(status), 'off')
+  assert.equal(clipboardSyncWorks(status), false)
+  const rows = Object.fromEntries(clipboardStatusView(status, texts).rows.map((r) => [r.id, r.text]))
+  assert.equal(rows.localSetting, 'off')
 })
 
 test('the rows say what the host sees and when it last heard the agent', () => {

@@ -9,6 +9,9 @@ use std::{path::PathBuf, sync::OnceLock};
 
 #[cfg(any(target_os = "windows", test))]
 mod worker;
+mod pairing_texts;
+mod toast;
+use crate::notify_action::NotifyAction;
 
 #[cfg(target_os = "windows")]
 static WINDOWS_NOTIFICATION_WORKER: once_cell::sync::OnceCell<worker::Worker> =
@@ -41,11 +44,6 @@ enum ConnectionChange {
 struct NotificationContent {
     title: String,
     body: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum NotificationAction {
-    OpenPin,
 }
 
 #[cfg(target_os = "windows")]
@@ -99,7 +97,12 @@ fn ensure_windows_aumid_registered<R: Runtime>(app: &AppHandle<R>) -> Result<(),
 pub(super) fn initialize<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        ensure_windows_aumid_registered(app)
+        ensure_windows_aumid_registered(app)?;
+        // an isolated measurement instance must not point the person's toast clicks at itself
+        if !crate::test_isolation::active() {
+            toast::ensure_protocol_registered()?;
+        }
+        Ok(())
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -107,6 +110,11 @@ pub(super) fn initialize<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         let _ = app;
         Ok(())
     }
+}
+
+/// The panel's code for a locale name of Sunshine's settings, when the panel has that language.
+pub(super) fn pairing_code_for(locale: &str) -> Option<&'static str> {
+    pairing_texts::code_for(locale)
 }
 
 /// Show a native desktop notification using the same user preference as the
@@ -191,6 +199,14 @@ fn connection_changes(
     }
 }
 
+/// A click on "client connected" shows the running session; on "disconnected" there is none, so the main panel opens.
+fn connection_action(change: &ConnectionChange) -> NotifyAction {
+    match change {
+        ConnectionChange::Connected { .. } => NotifyAction::OpenPage("live-session".into()),
+        ConnectionChange::Disconnected(_) => NotifyAction::OpenMain,
+    }
+}
+
 fn connection_content(
     strings: &super::TrayStrings,
     change: ConnectionChange,
@@ -231,27 +247,33 @@ fn connection_content(
 
 fn core_notification_content(
     strings: &super::TrayStrings,
+    locale: &str,
     state: &crate::sunshine::TrayState,
     supports_actions: bool,
 ) -> NotificationContent {
     let notification = &state.notification;
+    if notification.action == "nr_active" {
+        return NotificationContent { title: "Sunshine · DLSS NR".into(), body: strings.nr_active.into() };
+    }
     if notification.action == "open_pin" {
+        // the pairing request is in the language of the host, one of the 20 of the panel (pairing_texts.rs)
+        let texts = pairing_texts::texts(locale);
         let client_name = state.pairing_client_name.trim();
         let title = if client_name.is_empty() {
-            strings.incoming_pairing.to_string()
+            texts.incoming_pairing.to_string()
         } else {
             format!(
                 "{} · {}",
-                strings.incoming_pairing,
+                texts.incoming_pairing,
                 super::menu::compact_menu_text(client_name, 64)
             )
         };
         return NotificationContent {
             title,
             body: if supports_actions {
-                strings.pairing_instruction
+                texts.pairing_instruction
             } else {
-                strings.pairing_menu_instruction
+                texts.pairing_menu_instruction
             }
             .to_string(),
         };
@@ -278,8 +300,9 @@ pub(super) fn show_connection_change_if_any<R: Runtime>(
 
     let strings = super::get_tray_strings();
     for change in connection_changes(previous, current) {
+        let action = connection_action(&change);
         let content = connection_content(strings, change);
-        if let Err(error) = show(app, content, None, connection_is_enabled, None) {
+        if let Err(error) = show(app, content, action, connection_is_enabled, None) {
             warn!("{}", error);
         }
     }
@@ -306,9 +329,9 @@ pub(super) fn show_core_notification_if_new<R: Runtime>(
     }
 
     let supports_actions = supports_actions();
-    let content = core_notification_content(super::get_tray_strings(), state, supports_actions);
-    let action = (notification.action == "open_pin" && supports_actions)
-        .then_some(NotificationAction::OpenPin);
+    let content = core_notification_content(super::get_tray_strings(), super::notification_locale(), state, supports_actions);
+    // every notification answers its click (a toast that left the screen is in the notification centre, and its click is answered from there too)
+    let action = NotifyAction::for_core(&notification.action);
     match show(app, content, action, is_enabled, Some(key)) {
         Ok(()) => {
             debug!("Queued native tray notification {}", notification.id);
@@ -345,7 +368,7 @@ fn deliver_notification(
 fn show<R: Runtime>(
     app: &AppHandle<R>,
     content: NotificationContent,
-    action: Option<NotificationAction>,
+    action: NotifyAction,
     enabled: fn() -> bool,
     key: Option<NotificationKey>,
 ) -> Result<(), String> {
@@ -361,7 +384,7 @@ fn show<R: Runtime>(
         worker.submit(move || {
             let started = std::time::Instant::now();
             if let Err(error) = deliver_notification(&key, enabled, || {
-                show_windows(&app, &content.title, &content.body, action)
+                show_windows(&app, &content.title, &content.body, &action)
             }) {
                 warn!("{error}");
             }
@@ -402,10 +425,8 @@ fn show_windows<R: Runtime>(
     app: &AppHandle<R>,
     title: &str,
     body: &str,
-    action: Option<NotificationAction>,
+    action: &NotifyAction,
 ) -> Result<(), String> {
-    use std::sync::mpsc;
-    use tauri_winrt_notification::{IconCrop, Sound, Toast};
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
     struct ComApartment;
@@ -423,51 +444,15 @@ fn show_windows<R: Runtime>(
     ensure_windows_aumid_registered(app)?;
 
     let icon_path = ensure_windows_notification_icon()?;
-    let mut toast = Toast::new(&app.config().identifier)
-        .title(title)
-        .icon(&icon_path, IconCrop::Circular, "Sunshine")
-        .sound(Some(Sound::Default));
-    if !body.trim().is_empty() {
-        toast = toast.text1(body);
-    }
-
-    let Some(action) = action else {
-        toast
-            .show()
-            .map_err(|error| format!("Failed to show native tray notification: {error:?}"))?;
-        return Ok(());
-    };
-
-    let (sender, receiver) = mpsc::channel();
-    let activated_sender = sender.clone();
-    toast = toast
-        .on_activated(move |selected_action| {
-            let _ = activated_sender.send(selected_action.is_none());
-            Ok(())
-        })
-        .on_dismissed(move |_| {
-            let _ = sender.send(false);
-            Ok(())
-        });
-    toast
-        .show()
-        .map_err(|error| format!("Failed to show native tray notification: {error:?}"))?;
-
-    let app_handle = app.clone();
-    std::thread::Builder::new()
-        .name("sunshine-notification-action".to_string())
-        .spawn(move || {
-            if receiver.recv().unwrap_or(false) {
-                match action {
-                    NotificationAction::OpenPin => {
-                        super::actions::open_pairing_window(&app_handle);
-                    }
-                }
-            }
-        })
-        .map_err(|error| format!("Failed to start notification action listener: {error}"))?;
-
-    Ok(())
+    let launch = action.to_uri();
+    let xml = toast::toast_xml(&toast::ToastXml {
+        title,
+        body,
+        launch: &launch,
+        icon: Some(&icon_path),
+        alt_text: "Sunshine",
+    });
+    toast::show_xml(&app.config().identifier, &xml)
 }
 
 #[cfg(test)]
@@ -665,13 +650,44 @@ mod tests {
     }
 
     #[test]
+    fn the_pairing_request_speaks_the_language_of_the_host() {
+        let mut state = tray_state("pairing", "core-instance");
+        state.pairing_client_name = "客厅电视".to_string();
+        state.notification.action = "open_pin".to_string();
+        let de = core_notification_content(&super::super::EN_STRINGS, "de", &state, true);
+        assert_eq!(de.title, "Moonlight-Kopplungsanfrage · 客厅电视");
+        assert!(de.body.starts_with("Auf diese Benachrichtigung klicken"), "{}", de.body);
+        // without a click that opens the entry the text points to the tray menu instead
+        let no_click = core_notification_content(&super::super::EN_STRINGS, "de", &state, false);
+        assert!(no_click.body.contains("Complete Pairing"), "{}", no_click.body);
+        // a language the panel does not have, and one that was never set, are English
+        assert_eq!(core_notification_content(&super::super::EN_STRINGS, "he", &state, true).title, "Moonlight pairing request · 客厅电视");
+    }
+
+    #[test]
+    fn a_click_on_a_connection_toast_opens_the_session_or_the_panel() {
+        let connected = ConnectionChange::Connected { client_name: None, highly_suspected_unknown_client: false };
+        assert_eq!(connection_action(&connected), NotifyAction::OpenPage("live-session".into()));
+        assert_eq!(connection_action(&ConnectionChange::Disconnected(None)), NotifyAction::OpenMain);
+    }
+
+    #[test]
+    fn every_core_notification_has_a_click_that_a_launch_can_read_back() {
+        for action in ["open_pin", "open_vdd_settings", "nr_active", "", "something_newer"] {
+            let click = NotifyAction::for_core(action);
+            assert_eq!(NotifyAction::parse(&click.to_uri()), Some(click), "{action:?}");
+        }
+        assert_eq!(NotifyAction::for_core("open_pin"), NotifyAction::OpenPin);
+    }
+
+    #[test]
     fn pairing_copy_names_the_client_and_explains_the_click_action() {
         let mut state = tray_state("pairing", "core-instance");
         state.pairing_client_name = "Living Room TV".to_string();
         state.notification.action = "open_pin".to_string();
 
         assert_eq!(
-            core_notification_content(&super::super::EN_STRINGS, &state, true),
+            core_notification_content(&super::super::EN_STRINGS, "en", &state, true),
             NotificationContent {
                 title: "Moonlight pairing request · Living Room TV".to_string(),
                 body: "Click this notification to enter the 4-digit PIN shown in Moonlight."

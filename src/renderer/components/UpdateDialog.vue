@@ -30,9 +30,13 @@
     @open-release="handleOpenBrowser()"
     @open-changelog="handleOpenBrowser"
   >
-    <template v-if="latestNote || fallbackNote" #notice>
+    <template v-if="latestNote || fallbackNote || skippedNote || canUseGithub" #notice>
       <MBanner v-if="latestNote" tone="info" icon="info">{{ latestNote }}</MBanner>
       <MBanner v-if="fallbackNote" tone="info" icon="swap_horiz">{{ fallbackNote }}</MBanner>
+      <MBanner v-if="skippedNote" tone="info" icon="sync_problem">{{ skippedNote }}</MBanner>
+      <div v-if="canUseGithub" class="m-update-github">
+        <MButton variant="outlined" icon="cloud_download" @click="handleDownloadFromGithub">{{ t.updateDialog.useGithub }}</MButton>
+      </div>
     </template>
   </MUpdateSheet>
 </template>
@@ -40,8 +44,9 @@
 <script setup>
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from '../composables/notifyMessage.js'
-import { MBanner, MUpdateSheet, sheetFromPanelInfo } from 'foundation-ui/vue'
-import { channelOfVersion, fetchReleaseMetadata, orderedDownloadUrls } from 'foundation-ui/update'
+import { MBanner, MButton, MUpdateSheet, sheetFromPanelInfo } from 'foundation-ui/vue'
+import { channelOfVersion, displayVersion as displayRelease, fetchReleaseMetadata, orderedDownloadUrls } from 'foundation-ui/update'
+import { belongsToUpdate, downloadFailureText, githubUrlOf, isInstallerMismatch, skipNote } from '../composables/updateSources.js'
 import { useUpdateSource } from '../composables/useUpdateSource.js'
 import { mirrorFallbackText } from '../composables/mirrorFallback.js'
 import { useUpdateDownload } from '../composables/updateDownload.js'
@@ -55,6 +60,7 @@ const DOWNLOAD_ERROR_MESSAGE_KEYS = Object.freeze({
   file_preparation_failed: 'downloadFilePreparationFailed',
   file_finalization_failed: 'downloadFileFinalizationFailed',
   sources_exhausted: 'downloadSourcesFailed',
+  no_verified_source: 'downloadNoSource',
 })
 
 const props = defineProps({
@@ -73,7 +79,11 @@ const visible = computed({
 const updateDownload = useUpdateDownload()
 const isDownloading = computed(() => updateDownload.state.active)
 const download = computed(() => updateDownload.state)
-const downloadedFilePath = computed(() => updateDownload.state.path)
+// the finished file counts only when it is the installer of the update this sheet offers: the native task keeps the LAST download, which can be an earlier release's
+const downloadedFilePath = computed(() => {
+  const { path, sha256, filename } = updateDownload.state
+  return path && belongsToUpdate({ sha256, filename }, props.updateInfo) ? path : ''
+})
 const isInstalling = ref(false)
 const installStage = ref('idle')
 const installDetail = ref('')
@@ -83,11 +93,21 @@ const errorText = ref('')
 const errorStep = ref('download')
 const channel = ref('')
 const mirrorHost = ref('')
+// "改用 GitHub 下载": the person's choice for this update; Retry keeps it
+const onlySource = ref('')
 let installProgressUnlisten = null
 let installWaitTimer = null
 
 // the download did not come from Mirror酱 although it is the chosen source: one sentence with the reason and the source that took over
 const fallbackNote = computed(() => mirrorFallbackText(updateDownload.state.fallbackReason, updateDownload.state.source, t.value.updateDialog.mirrorFallback))
+// sources that were left out for this release (CNB or Mirror酱 not synced yet) and the one that took over
+const skippedNote = computed(() => (updateDownload.state.version === props.updateInfo?.version
+  ? skipNote(updateDownload.state.skipped, props.updateInfo?.version, updateDownload.state.source, { skip: t.value.updateDialog.sourceSkip, usedInstead: t.value.updateDialog.sourceUsedInstead })
+  : ''))
+// the way out of a failed download or install that does not depend on the mirrors: GitHub carries the release, and it was not the only thing tried
+// (not when GitHub itself was left out for this release or was tried and failed: asking it again alone changes nothing)
+const canUseGithub = computed(() => phase.value === 'error' && !!githubUrlOf(props.updateInfo) && onlySource.value !== 'github'
+  && ![...updateDownload.state.skipped, ...updateDownload.state.failed].some((entry) => entry?.source === 'GitHub'))
 const isLatest = computed(() => !!props.updateInfo?.is_latest)
 // "up to date" plus what else is true: the installed version is a prerelease and nothing newer exists
 const latestNote = computed(() => (isLatest.value && props.updateInfo?.latest_note === 'installed_prerelease_no_newer' ? t.value.updateDialog.latestNoteInstalledPrerelease : ''))
@@ -193,7 +213,7 @@ const checkCachedInstaller = async () => {
       !isDownloading.value &&
       !isInstalling.value
     ) {
-      updateDownload.state.path = cached
+      updateDownload.adoptCached(cached, props.updateInfo)
     }
   } catch (error) {
     console.warn('Failed to check cached installer:', error)
@@ -202,9 +222,20 @@ const checkCachedInstaller = async () => {
 
 const downloadErrorMessage = (error) => {
   const code = error && typeof error === 'object' ? error.code : ''
-  const messageKey = DOWNLOAD_ERROR_MESSAGE_KEYS[code] || 'downloadFailed'
   console.error('Download update failed', error)
-  return t.value.updateDialog[messageKey]
+  const dialog = t.value.updateDialog
+  const codes = Object.fromEntries(Object.entries(DOWNLOAD_ERROR_MESSAGE_KEYS).map(([key, name]) => [key, dialog[name]]))
+  codes.default = dialog.downloadFailed
+  const version = props.updateInfo?.version || ''
+  return downloadFailureText(
+    { code, skipped: error?.skipped ?? updateDownload.state.skipped, version },
+    { codes: Object.fromEntries(Object.entries(codes).map(([key, text]) => [key, String(text || '').replaceAll('{version}', displayRelease(version))])), skip: dialog.sourceSkip },
+  )
+}
+
+const handleDownloadFromGithub = () => {
+  onlySource.value = 'github'
+  handleDownload()
 }
 
 const handleDownload = async () => {
@@ -220,7 +251,10 @@ const handleDownload = async () => {
   try {
     const filename = props.updateInfo.download_name || `sunshine-update-${props.updateInfo.version}.exe`
     // the host that is tried first follows the interface language and the source of the update settings; the other is the one tried when it fails
-    const urls = orderedDownloadUrls({ url: downloadUrl, fallbackUrl: props.updateInfo.download_fallback_url || '' }, { source: updateSource.source.value, hasCdk: updateSource.hasCdk.value, locale: locale.value })
+    const githubOnly = onlySource.value === 'github' ? githubUrlOf(props.updateInfo) : ''
+    const urls = githubOnly
+      ? { url: githubOnly, fallbackUrl: null }
+      : orderedDownloadUrls({ url: downloadUrl, fallbackUrl: props.updateInfo.download_fallback_url || '' }, { source: updateSource.source.value, hasCdk: updateSource.hasCdk.value, locale: locale.value })
     const result = await updateDownload.start({
       url: urls.url,
       fallbackUrl: urls.fallbackUrl,
@@ -228,12 +262,15 @@ const handleDownload = async () => {
       expectedSize: props.updateInfo.download_size || null,
       expectedSha256: props.updateInfo.download_sha256 || null,
       assetType: props.updateInfo.download_type || null,
+      // the sources are checked against this release: one that lists another release is left out, not mixed in
+      targetVersion: props.updateInfo.version || null,
+      onlySource: githubOnly ? 'github' : null,
     })
 
     if (!result.ok) {
       console.error('Download update returned an unsuccessful result', result)
       errorStep.value = 'download'
-      errorText.value = downloadErrorMessage({ code: result.errorCode })
+      errorText.value = downloadErrorMessage({ code: result.errorCode, skipped: updateDownload.state.skipped })
     }
   } catch (error) {
     errorStep.value = 'download'
@@ -276,18 +313,27 @@ const handleInstall = async (filePath) => {
     ElMessage.success(t.value.updateDialog.installStarted)
   } catch (error) {
     if (error !== 'cancel') {
-      errorStep.value = 'install'
-      errorText.value = t.value.updateDialog.installError.replace('{error}', error)
       clearInstallWaitTimer()
       clearInstallProgressListener()
       isInstalling.value = false
+      if (isInstallerMismatch(error)) {
+        // the file was the installer of another build (the native side has deleted it): the install is not offered again, the download is
+        console.error('The downloaded installer is not the one of this update', error)
+        updateDownload.discard()
+        errorStep.value = 'download'
+        errorText.value = t.value.updateDialog.installerMismatch.replaceAll('{version}', displayRelease(props.updateInfo?.version || ''))
+        return
+      }
+      errorStep.value = 'install'
+      errorText.value = t.value.updateDialog.installError.replace('{error}', error)
     }
   }
 }
 
+// Retry plans the sources again: a finished installer is installed, anything else is downloaded again, and the native side puts a source whose file failed behind the others
 const handleRetry = () => {
   errorText.value = ''
-    if (downloadedFilePath.value) handleInstall(downloadedFilePath.value)
+  if (downloadedFilePath.value) handleInstall(downloadedFilePath.value)
   else handleDownload()
 }
 
@@ -322,6 +368,8 @@ const handleSkipVersion = () => {
 }
 
 const resetState = () => {
+  // a file, a failure or a note of an earlier release is not shown for this one
+  updateDownload.reconcile(props.updateInfo)
   // An update download outlives this sheet: reopening it must show the
   // transfer, not erase it.
   if (!isDownloading.value && !downloadedFilePath.value) resetDownloadState()
@@ -339,12 +387,22 @@ onBeforeUnmount(() => {
   clearInstallProgressListener()
 })
 
+// the update the sheet offers can change while it is open (a later check finds a newer release): what belongs to the earlier one goes
+watch(
+  () => [props.updateInfo?.version, props.updateInfo?.download_sha256],
+  () => {
+    if (updateDownload.reconcile(props.updateInfo)) errorText.value = ''
+    if (props.modelValue) checkCachedInstaller()
+  },
+)
+
 watch(
   () => props.modelValue,
   (newVal) => {
     if (newVal) {
+      onlySource.value = ''
       resetState()
-      updateDownload.refresh()
+      updateDownload.refresh(props.updateInfo)
       checkCachedInstaller()
       resolveChannel()
     }
@@ -352,3 +410,7 @@ watch(
   { immediate: true },
 )
 </script>
+
+<style scoped>
+.m-update-github { display: flex; justify-content: flex-start; margin-block: 0 4px; }
+</style>

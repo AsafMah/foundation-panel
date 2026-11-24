@@ -17,6 +17,7 @@ mod cdk_store;
 mod mirrorchyan;
 mod metadata;
 mod preferences;
+mod sources;
 
 pub(crate) use preferences::{include_prerelease as get_include_prerelease, save_last_check_time};
 
@@ -65,6 +66,14 @@ struct UpdateDownloadStatus {
     error: Option<String>,
     /// Why the download did not come from Mirror酱 although it is the chosen source (`mirrorchyan::Miss::word`); None when it did, or when it was not chosen.
     fallback_reason: Option<String>,
+    /// The release this download is for (tag), and the size and SHA-256 its installer must have. The window that reads this status
+    /// after a reload uses them to tell whether the file is the one of the update it is showing: a finished download of an earlier
+    /// release is not the installer of a newer one.
+    version: Option<String>,
+    sha256: Option<String>,
+    size: Option<u64>,
+    /// The sources that were not used for this release because they do not list it (yet), with the reason.
+    skipped: Vec<sources::Skipped>,
 }
 
 impl Default for UpdateDownloadStatus {
@@ -80,6 +89,10 @@ impl Default for UpdateDownloadStatus {
             path: None,
             error: None,
             fallback_reason: None,
+            version: None,
+            sha256: None,
+            size: None,
+            skipped: Vec::new(),
         }
     }
 }
@@ -165,12 +178,27 @@ enum DownloadErrorCode {
     FilePreparationFailed,
     FileFinalizationFailed,
     SourcesExhausted,
+    /// No source lists this release (with the size and SHA-256 of its installer): nothing was downloaded.
+    NoVerifiedSource,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct DownloadCommandError {
     code: DownloadErrorCode,
     detail: String,
+    /// Sources that were left out for this release, and why.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped: Vec<sources::Skipped>,
+    /// Sources that were tried and did not deliver the file.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    failed: Vec<FailedSource>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct FailedSource {
+    source: &'static str,
+    /// The source answered with a file that is not this release's installer (size or SHA-256), as opposed to not answering.
+    identity: bool,
 }
 
 impl DownloadCommandError {
@@ -178,7 +206,25 @@ impl DownloadCommandError {
         Self {
             code,
             detail: detail.into(),
+            skipped: Vec::new(),
+            failed: Vec::new(),
         }
+    }
+
+    fn with_skipped(mut self, skipped: Vec<sources::Skipped>) -> Self {
+        self.skipped = skipped;
+        self
+    }
+
+    fn with_failures(mut self, failures: &[github_download::SourceFailure]) -> Self {
+        self.failed = failures
+            .iter()
+            .map(|failure| FailedSource {
+                source: failure.source,
+                identity: failure.identity,
+            })
+            .collect();
+        self
     }
 }
 
@@ -1924,6 +1970,37 @@ fn normalize_sha256(value: &str) -> Option<String> {
         .then(|| value.to_ascii_lowercase())
 }
 
+/// The start of the error `install_update` returns when the installer on disk is not the one of the update (another size or SHA-256). The window
+/// reads it to drop the file and download again instead of offering the same install once more.
+pub(crate) const INSTALLER_MISMATCH_ERROR: &str = "installer_mismatch";
+
+/// Whether `error` (from `validate_download_file_identity`) says the file is not this release's installer, as opposed to a file that could not be read.
+fn is_identity_error(error: &str) -> bool {
+    ["文件大小不匹配", "SHA-256 不匹配", "下载文件格式与资产类型不匹配"]
+        .iter()
+        .any(|prefix| error.starts_with(prefix))
+}
+
+/// Removes an installer that is not the one of the update and everything that would offer it again (the cache marker, the status of the finished download).
+fn discard_mismatched_installer(file_path: &str) {
+    if let Err(error) = fs::remove_file(file_path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        warn!("⚠️ 删除不匹配的安装包失败: {error}");
+    }
+    // the marker protects the installer it names from the cleanup of old installers: only that one's marker goes
+    let name = Path::new(file_path).file_name().map(|name| name.to_string_lossy().to_string());
+    if read_update_cache_marker().is_some_and(|marker| Some(&marker.filename) == name.as_ref()) {
+        let _ = fs::remove_file(update_cache_marker_path());
+    }
+    set_download_status(|status| {
+        if status.path.as_deref() == Some(file_path) {
+            status.path = None;
+            status.phase = "error".to_string();
+        }
+    });
+}
+
 fn validate_download_file_identity(
     path: &Path,
     expected_size: Option<u64>,
@@ -2164,6 +2241,41 @@ async fn mirror_download_candidate(
     (candidate, None)
 }
 
+/// Asks CNB whether it lists the installer `filename` (the release being installed) and builds its offer from what CNB itself says. Left out with its
+/// reason when CNB lists another release (not synced yet) or cannot be asked.
+async fn probe_cnb_offer(filename: &str) -> Result<sources::Offer, sources::Skipped> {
+    offer_from_cnb_listing(metadata::cnb_listing(filename).await)
+}
+
+fn offer_from_cnb_listing(
+    listing: Result<metadata::CnbListing, String>,
+) -> Result<sources::Offer, sources::Skipped> {
+    let unreachable = |listed| sources::Skipped {
+        source: "CNB",
+        reason: sources::SkipReason::Unreachable,
+        listed,
+    };
+    let listing = listing.map_err(|error| {
+        info!("CNB 此刻取不到发布列表: {error}");
+        unreachable(None)
+    })?;
+    match listing.installer {
+        Some(installer) => Ok(sources::Offer {
+            name: "CNB",
+            url: installer.url,
+            listed_tag: Some(listing.tag),
+            listed_size: Some(installer.size),
+            listed_sha256: Some(installer.sha256),
+        }),
+        // the newest release on CNB does not carry this installer (the file name holds the release's date): CNB has not synced this one
+        None => Err(sources::Skipped {
+            source: "CNB",
+            reason: sources::SkipReason::NotSynced,
+            listed: Some(listing.tag),
+        }),
+    }
+}
+
 /// 下载更新文件（带真实进度报告）
 #[tauri::command]
 pub async fn download_update(
@@ -2174,6 +2286,7 @@ pub async fn download_update(
     expected_sha256: Option<String>,
     asset_type: Option<String>,
     target_version: Option<String>,
+    only_source: Option<String>,
     app_handle: AppHandle,
 ) -> Result<serde_json::Value, DownloadCommandError> {
     validate_download_url(&url, Some(&filename)).map_err(|detail| {
@@ -2248,6 +2361,9 @@ pub async fn download_update(
             active: true,
             phase: "connecting".to_string(),
             filename: filename.clone(),
+            version: target_version.clone(),
+            sha256: Some(expected_sha256.clone()),
+            size: expected_size.filter(|size| *size > 0),
             ..Default::default()
         };
     });
@@ -2258,7 +2374,10 @@ pub async fn download_update(
 
     // 来源为 mirror 且 CDK 有效时，Mirror酱 的下载地址排在最前；
     // 任何失败（无 CDK、CDK 错误、离线、地址不合规）都静默回退 CNB → GitHub。
-    let mirror_chosen = preferences::update_source(&app_handle) == "mirror";
+    // `only_source = "github"`：人选了「改用 GitHub 下载」，只走 GitHub，不问 Mirror酱 也不问 CNB。
+    let github_only = only_source.as_deref() == Some("github");
+    let source_preference = preferences::update_source(&app_handle);
+    let mirror_chosen = !github_only && source_preference == "mirror";
     let (mirror_candidate, mut mirror_miss) = if mirror_chosen {
         mirror_download_candidate(&app_handle, target_version.as_deref()).await
     } else {
@@ -2267,14 +2386,89 @@ pub async fn download_update(
     if let Some(miss) = mirror_miss {
         set_download_status(|status| status.fallback_reason = Some(miss.word().to_string()));
     }
-    let candidates = download_candidates(mirror_candidate, &url, fallback_url.as_deref());
+    let mut offers: Vec<sources::Offer> =
+        download_candidates(mirror_candidate, &url, fallback_url.as_deref())
+            .iter()
+            .map(|candidate| sources::Offer::from_release_url(candidate.name, &candidate.url))
+            .collect();
+    if github_only {
+        offers.retain(|offer| offer.name == "GitHub");
+    }
+    // The release came from GitHub alone (CNB did not list it when the check ran, or the check read GitHub directly): ask CNB now whether it
+    // lists exactly this release, with its own size and SHA-256, before the download starts. A CNB that has not synced it is skipped with its reason.
+    let mut skipped = Vec::new();
+    let wants_cnb_probe = !github_only
+        && source_preference != "github"
+        && !offers.iter().any(|offer| offer.name == "CNB")
+        && metadata::current_locale_is_chinese().await;
+    if wants_cnb_probe {
+        match probe_cnb_offer(&filename).await {
+            Ok(offer) => {
+                let at = offers
+                    .iter()
+                    .position(|existing| existing.name == "GitHub")
+                    .unwrap_or(offers.len());
+                offers.insert(at, offer);
+            }
+            Err(reason) => skipped.push(reason),
+        }
+    }
+    let target = sources::Target {
+        tag: target_version.clone().filter(|tag| !tag.trim().is_empty()),
+        size: expected_size.filter(|size| *size > 0),
+        sha256: expected_sha256.clone(),
+    };
+    let plan = sources::plan(&target, offers, &sources::bad_for(&expected_sha256));
+    skipped.extend(plan.skipped);
+    for reason in &skipped {
+        info!(
+            "下载来源 {} 不用于本次更新（原因: {:?}，它列出的版本: {}）",
+            reason.source,
+            reason.reason,
+            reason.listed.as_deref().unwrap_or("-")
+        );
+    }
+    set_download_status(|status| status.skipped = skipped.clone());
+    if plan.usable.is_empty() {
+        let detail = format!(
+            "no source lists release {}: {}",
+            target_version.as_deref().unwrap_or("-"),
+            skipped
+                .iter()
+                .map(|reason| format!("{} ({:?})", reason.source, reason.reason))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        set_download_status(|status| {
+            status.active = false;
+            status.phase = "error".to_string();
+            status.error = Some(detail.clone());
+        });
+        crate::tray::set_transient_tooltip(
+            &app_handle,
+            Some(crate::tray::download_failed_tooltip().to_string()),
+        );
+        clear_tooltip_later(app_handle.clone(), Duration::from_secs(20));
+        return Err(
+            DownloadCommandError::new(DownloadErrorCode::NoVerifiedSource, detail)
+                .with_skipped(skipped),
+        );
+    }
+    let candidates: Vec<github_download::DownloadCandidate> = plan
+        .usable
+        .iter()
+        .map(|offer| github_download::DownloadCandidate {
+            name: offer.name,
+            url: offer.url.clone(),
+        })
+        .collect();
 
     let mut last_progress_percent = 0;
     let mut last_tooltip_percent = 0u32;
     let mut last_tooltip_at = std::time::Instant::now();
     let outcome = github_download::download_to_file_from_candidates(
         DownloadRequest {
-            url: &url,
+            url: &candidates[0].url,
             destination: &partial_path,
             expected_size: expected_size.filter(|size| *size > 0),
             expected_sha256: Some(&expected_sha256),
@@ -2383,7 +2577,13 @@ pub async fn download_update(
         } else {
             DownloadErrorCode::SourcesExhausted
         };
+        // a source that sent another file than this release's installer goes behind the others on the next try
+        for failure in error.failures().iter().filter(|failure| failure.identity) {
+            sources::mark_bad(&expected_sha256, failure.source);
+        }
         DownloadCommandError::new(code, error.to_string())
+            .with_skipped(skipped.clone())
+            .with_failures(error.failures())
     })?;
 
     if let Err(error) = validate_download_file_identity(
@@ -2393,6 +2593,7 @@ pub async fn download_update(
         asset_type.as_deref(),
     ) {
         let _ = tokio::fs::remove_file(&partial_path).await;
+        sources::mark_bad(&expected_sha256, outcome.source);
         set_download_status(|status| {
             status.active = false;
             status.phase = "error".to_string();
@@ -2403,10 +2604,15 @@ pub async fn download_update(
             Some(crate::tray::download_failed_tooltip().to_string()),
         );
         clear_tooltip_later(app_handle.clone(), Duration::from_secs(20));
-        return Err(DownloadCommandError::new(
-            DownloadErrorCode::SourcesExhausted,
-            error,
-        ));
+        return Err(
+            DownloadCommandError::new(DownloadErrorCode::SourcesExhausted, error)
+                .with_skipped(skipped)
+                .with_failures(&[github_download::SourceFailure {
+                    source: outcome.source,
+                    identity: true,
+                    detail: String::new(),
+                }]),
+        );
     }
 
     if let Some(ref win) = window {
@@ -2442,6 +2648,7 @@ pub async fn download_update(
             .unwrap_or(outcome.downloaded),
     );
 
+    sources::forget(&expected_sha256);
     preferences::record_used_update_source(&app_handle, outcome.source);
     // Mirror酱 was tried and the file still came from elsewhere: its download failed.
     if mirror_chosen && mirror_miss.is_none() && outcome.source != "Mirror酱" {
@@ -2483,7 +2690,8 @@ pub async fn download_update(
         "success": true,
         "file_path": file_path.to_string_lossy().to_string(),
         "source": outcome.source,
-        "fallback_reason": mirror_miss.map(mirrorchyan::Miss::word)
+        "fallback_reason": mirror_miss.map(mirrorchyan::Miss::word),
+        "skipped": skipped,
     }))
 }
 
@@ -2537,6 +2745,145 @@ mod download_source_tests {
         let without_mirror = download_candidates(None, cnb, Some(github));
         let names: Vec<_> = without_mirror.iter().map(|candidate| candidate.name).collect();
         assert_eq!(names, ["CNB", "GitHub"]);
+    }
+
+    const NEW_TAG: &str = "v2026.1123.20745.杂鱼";
+    const OLD_TAG: &str = "v2026.1122.165529.杂鱼";
+    const NEW_SHA: &str = "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12";
+    const OLD_SHA: &str = "cd34cd34cd34cd34cd34cd34cd34cd34cd34cd34cd34cd34cd34cd34cd34cd34";
+    const NEW_NAME: &str = "Sunshine.v2026.1123.WindowsInstaller.exe";
+
+    fn release_url(host: &str, tag: &str, name: &str) -> String {
+        let tag = tag.replace('杂', "%E6%9D%82").replace('鱼', "%E9%B1%BC");
+        if host == "cnb.cool" {
+            format!("https://cnb.cool/AlkaidLab/foundation-sunshine-release/-/releases/download/{tag}/{name}")
+        } else {
+            format!("https://github.com/AlkaidLab/foundation-sunshine/releases/download/{tag}/{name}")
+        }
+    }
+
+    fn new_target() -> sources::Target {
+        sources::Target {
+            tag: Some(NEW_TAG.to_string()),
+            size: Some(42_534_326),
+            sha256: NEW_SHA.to_string(),
+        }
+    }
+
+    fn cnb_listing(tag: &str, installer: Option<(u64, &str)>) -> metadata::CnbListing {
+        metadata::CnbListing {
+            tag: tag.to_string(),
+            installer: installer.map(|(size, sha256)| metadata::CnbInstaller {
+                size,
+                sha256: sha256.to_string(),
+                url: release_url("cnb.cool", tag, NEW_NAME),
+            }),
+        }
+    }
+
+    /// The names of the sources that would be tried, in order, for a release that GitHub lists (GitHub address only) while CNB answers with `cnb`.
+    fn sources_for_github_release(cnb: Result<metadata::CnbListing, String>) -> (Vec<&'static str>, Vec<sources::Skipped>) {
+        let mut offers = vec![sources::Offer::from_release_url(
+            "GitHub",
+            &release_url("github.com", NEW_TAG, NEW_NAME),
+        )];
+        let mut skipped = Vec::new();
+        match offer_from_cnb_listing(cnb) {
+            Ok(offer) => offers.insert(0, offer),
+            Err(reason) => skipped.push(reason),
+        }
+        let plan = sources::plan(&new_target(), offers, &[]);
+        skipped.extend(plan.skipped);
+        (plan.usable.iter().map(|offer| offer.name).collect(), skipped)
+    }
+
+    #[test]
+    fn a_cnb_that_has_not_synced_the_release_is_skipped_and_github_is_used() {
+        // CNB still lists the previous build: its newest release carries another installer
+        let (names, skipped) = sources_for_github_release(Ok(cnb_listing(OLD_TAG, None)));
+        assert_eq!(names, ["GitHub"]);
+        assert_eq!(
+            skipped,
+            [sources::Skipped {
+                source: "CNB",
+                reason: sources::SkipReason::NotSynced,
+                listed: Some(OLD_TAG.to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_cnb_that_lists_the_release_with_its_own_size_and_hash_goes_first() {
+        let (names, skipped) = sources_for_github_release(Ok(cnb_listing(NEW_TAG, Some((42_534_326, NEW_SHA)))));
+        assert_eq!(names, ["CNB", "GitHub"]);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn a_cnb_that_lists_the_release_with_another_size_or_hash_is_skipped() {
+        let (names, skipped) = sources_for_github_release(Ok(cnb_listing(NEW_TAG, Some((42_528_017, NEW_SHA)))));
+        assert_eq!(names, ["GitHub"]);
+        assert_eq!(skipped[0].reason, sources::SkipReason::SizeMismatch);
+
+        let (names, skipped) = sources_for_github_release(Ok(cnb_listing(NEW_TAG, Some((42_534_326, OLD_SHA)))));
+        assert_eq!(names, ["GitHub"]);
+        assert_eq!(skipped[0].reason, sources::SkipReason::HashMismatch);
+    }
+
+    #[test]
+    fn an_unreachable_cnb_is_skipped_without_stopping_the_download() {
+        let (names, skipped) = sources_for_github_release(Err("timeout".to_string()));
+        assert_eq!(names, ["GitHub"]);
+        assert_eq!(skipped[0].reason, sources::SkipReason::Unreachable);
+    }
+
+    /// From mainland China GitHub may not answer while CNB has not synced the release: nothing may be claimed to be downloadable
+    /// that was not listed, and the answer then names the sources that were left out so the window can offer the release page.
+    #[test]
+    fn with_cnb_not_synced_the_only_source_left_is_github() {
+        let (names, skipped) = sources_for_github_release(Ok(cnb_listing(OLD_TAG, None)));
+        assert_eq!(names, ["GitHub"]);
+        let error = DownloadCommandError::new(DownloadErrorCode::SourcesExhausted, "GitHub: request failed")
+            .with_skipped(skipped)
+            .with_failures(&[github_download::SourceFailure {
+                source: "GitHub",
+                identity: false,
+                detail: "request failed".to_string(),
+            }]);
+        let serialized = serde_json::to_value(error).unwrap();
+        assert_eq!(serialized["code"], "sources_exhausted");
+        assert_eq!(serialized["skipped"][0]["source"], "CNB");
+        assert_eq!(serialized["skipped"][0]["reason"], "not_synced");
+        assert_eq!(serialized["skipped"][0]["listed"], OLD_TAG);
+        assert_eq!(serialized["failed"][0], serde_json::json!({ "source": "GitHub", "identity": false }));
+    }
+
+    #[test]
+    fn both_cnb_and_the_github_address_lagging_leaves_no_source() {
+        let offers = vec![
+            sources::Offer::from_release_url("CNB", &release_url("cnb.cool", OLD_TAG, "Sunshine.v2026.1122.WindowsInstaller.exe")),
+            sources::Offer::from_release_url("GitHub", &release_url("github.com", OLD_TAG, "Sunshine.v2026.1122.WindowsInstaller.exe")),
+        ];
+        let plan = sources::plan(&new_target(), offers, &[]);
+        assert!(plan.usable.is_empty());
+        assert!(plan.skipped.iter().all(|skipped| skipped.reason == sources::SkipReason::NotSynced));
+        let error = DownloadCommandError::new(DownloadErrorCode::NoVerifiedSource, "no source lists release")
+            .with_skipped(plan.skipped);
+        let serialized = serde_json::to_value(error).unwrap();
+        assert_eq!(serialized["code"], "no_verified_source");
+        assert_eq!(serialized["skipped"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_mirror_address_without_a_tag_is_not_judged_by_a_tag() {
+        // Mirror酱 addresses carry a token: the downloaded bytes are the proof, the size and SHA-256 are checked while streaming
+        let offers = vec![
+            sources::Offer::from_release_url("Mirror酱", "https://mirrorchyan.com/resources/download/token"),
+            sources::Offer::from_release_url("GitHub", &release_url("github.com", NEW_TAG, NEW_NAME)),
+        ];
+        let plan = sources::plan(&new_target(), offers, &[]);
+        let names: Vec<_> = plan.usable.iter().map(|offer| offer.name).collect();
+        assert_eq!(names, ["Mirror酱", "GitHub"]);
     }
 
     #[test]
@@ -2656,6 +3003,33 @@ mod download_source_tests {
         let selected =
             select_compatible_candidate(&catalog, UpdateChannel::StableAndPrerelease).unwrap();
         assert!(!selected.prerelease);
+    }
+
+    /// The install of 2026-11-23 failed with "文件大小不匹配: expected 42534326, got 42528017" every time it was repeated: the file on disk was
+    /// the previous build. That error is an identity error: the file is removed and the next step is a download, not the same install.
+    #[test]
+    fn an_installer_of_another_build_is_an_identity_error_and_is_removed() {
+        let file = std::env::temp_dir().join(format!(
+            "Sunshine-identity-test-{}-{}.exe",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&file, b"MZ-previous-build").unwrap();
+        let sha = format!("{:x}", sha2::Sha256::digest(b"MZ-previous-build"));
+
+        let wrong_size = validate_installer_path(&file, Some(42_534_326), Some(&sha)).unwrap_err();
+        assert!(wrong_size.starts_with("文件大小不匹配"), "{wrong_size}");
+        assert!(is_identity_error(&wrong_size));
+        let wrong_hash = validate_installer_path(&file, Some(17), Some(&"0".repeat(64))).unwrap_err();
+        assert!(is_identity_error(&wrong_hash), "{wrong_hash}");
+        let missing = validate_installer_path(&file.with_extension("missing.exe"), Some(17), Some(&sha)).unwrap_err();
+        assert!(!is_identity_error(&missing), "{missing}");
+
+        discard_mismatched_installer(&file.to_string_lossy());
+        assert!(!file.exists());
     }
 
     #[test]
@@ -3027,6 +3401,7 @@ pub(crate) async fn repair_installation(app: AppHandle) -> Result<(), String> {
         Some(sha256.clone()),
         Some(kind),
         Some(info.version.clone()),
+        None,
         app.clone(),
     )
     .await
@@ -3083,6 +3458,14 @@ pub async fn install_update(
         ) {
             Ok(path) => path,
             Err(error) => {
+                if is_identity_error(&error) {
+                    // not the installer of this update: it must not be offered again, whatever the person presses next
+                    warn!("⚠️ 已下载的安装包不是本次更新的安装包，已删除: {error}");
+                    discard_mismatched_installer(&file_path);
+                    let error = format!("{INSTALLER_MISMATCH_ERROR}: {error}");
+                    emit_install_progress(&app_handle, "failed", Some(&error), true);
+                    return Err(error);
+                }
                 emit_install_progress(&app_handle, "failed", Some(&error), true);
                 return Err(error);
             }

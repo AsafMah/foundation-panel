@@ -95,6 +95,19 @@ fn nt_result(status: i32, operation: &str) -> io::Result<()> {
     }
 }
 
+fn unsupported_payload(size: u32, stamp: u32, data: &[u8]) -> io::Error {
+    let shown = size.min(data.len() as u32) as usize;
+    let hex = data[..shown]
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("unexpected touch keyboard notification payload: size={size} stamp={stamp} data={hex}"),
+    )
+}
+
 impl Notification for WnfNotification {
     fn current_session(&mut self) -> io::Result<u32> {
         current_session_id()
@@ -141,11 +154,14 @@ impl Notification for WnfNotification {
         result
     }
 
-    fn read(&mut self, session_id: u32) -> io::Result<u32> {
+    fn read(&mut self, session_id: u32) -> io::Result<Option<u32>> {
         let api = self.api(session_id)?;
-        let mut size = 4;
+        // A buffer larger than the expected payload keeps an unexpected
+        // state readable for diagnostics instead of failing with an
+        // opaque buffer-too-small status.
+        let mut data = [0u8; 16];
+        let mut size = data.len() as u32;
         let mut stamp = 0;
-        let mut value = 0;
         nt_result(
             unsafe {
                 (api.query)(
@@ -153,19 +169,27 @@ impl Notification for WnfNotification {
                     std::ptr::null(),
                     std::ptr::null(),
                     &mut stamp,
-                    &mut value,
+                    data.as_mut_ptr().cast::<u32>(),
                     &mut size,
                 )
             },
             "query",
         )?;
-        if size != 4 || value > 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Windows touch keyboard notification payload is unsupported",
-            ));
+        if size == 0 {
+            // Windows has not published this state yet. This is normal on
+            // the first query after a reboot, before the Settings handler
+            // or this module has ever written a value. The transaction
+            // records it as "no original runtime value".
+            return Ok(None);
         }
-        Ok(value)
+        if size != 4 {
+            return Err(unsupported_payload(size, stamp, &data));
+        }
+        let value = u32::from_le_bytes(data[..4].try_into().expect("size checked as 4"));
+        if value > 2 {
+            return Err(unsupported_payload(size, stamp, &data));
+        }
+        Ok(Some(value))
     }
 
     fn publish(&mut self, session_id: u32, value: u32) -> io::Result<()> {

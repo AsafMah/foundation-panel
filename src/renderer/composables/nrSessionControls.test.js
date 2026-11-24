@@ -85,9 +85,9 @@ test('the options of the overlay pass with their controls version and their rang
   assert.throws(() => nrSessionRequest({ ...active, nr_live_controls_version: 1 }, 42, { intensity: 0.5 }), /nr_toggle_unsupported/)
 })
 
-test('the reset switches off and puts every option back, the version 3 options only where the host has them', () => {
-  assert.deepEqual(nrResetRequest(active, 42), { id: 42, enabled: false, scalePercent: 100, intensity: 1, style: 0, skinStructureStrength: 0, autoMask: false, uiCorrection: false, motionQuality: 0 })
-  assert.deepEqual(nrResetRequest({ ...active, nr_live_controls_version: 2 }, 42), { id: 42, enabled: false, scalePercent: 100, intensity: 1, uiCorrection: false, motionQuality: 0 })
+test('the reset preserves the global switch and puts every option back, the version 3 options only where the host has them', () => {
+  assert.deepEqual(nrResetRequest(active, 42), { id: 42, enabled: true, scalePercent: 100, intensity: 1, style: 0, skinStructureStrength: 0, autoMask: false, uiCorrection: false, motionQuality: 0 })
+  assert.deepEqual(nrResetRequest({ ...active, nr_live_controls_version: 2 }, 42), { id: 42, enabled: true, scalePercent: 100, intensity: 1, uiCorrection: false, motionQuality: 0 })
   assert.throws(() => nrResetRequest(active, 43), /nr_session_ended/)
 })
 

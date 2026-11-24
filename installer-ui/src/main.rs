@@ -221,20 +221,35 @@ fn capture_page(window: &WebviewWindow, path: PathBuf) {
 fn keep_fixed_size(window: &WebviewWindow) {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
-    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION};
-    unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, STYLESTRUCT,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION,
+        WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+    };
+    const NON_CLIENT_STYLE: u32 =
+        WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0 | WS_THICKFRAME.0;
+    unsafe extern "system" fn proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
         const WM_NCLBUTTONDBLCLK: u32 = 0x00A3;
         const WM_SYSCOMMAND: u32 = 0x0112;
         const WM_STYLECHANGING: u32 = 0x007C;
         const SC_MAXIMIZE: usize = 0xF030;
-        if msg == WM_NCLBUTTONDBLCLK || (msg == WM_SYSCOMMAND && (wparam.0 & 0xFFF0) == SC_MAXIMIZE) {
+        if msg == WM_NCLBUTTONDBLCLK || (msg == WM_SYSCOMMAND && (wparam.0 & 0xFFF0) == SC_MAXIMIZE)
+        {
             return LRESULT(0);
         }
-        // no OS caption, ever: the window keeps WS_CAPTION off whatever re-applies its style
+        // The page owns the entire surface, including its title bar. Keep tao/WebView2 from restoring any
+        // system caption or frame after the window has been created.
         if msg == WM_STYLECHANGING && wparam.0 as i32 == GWL_STYLE.0 {
             let change = lparam.0 as *mut STYLESTRUCT;
             if !change.is_null() {
-                unsafe { (*change).styleNew &= !WS_CAPTION.0 };
+                unsafe { (*change).styleNew &= !NON_CLIENT_STYLE };
             }
         }
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
@@ -243,8 +258,16 @@ fn keep_fixed_size(window: &WebviewWindow) {
         unsafe {
             let _ = SetWindowSubclass(hwnd, Some(proc), 0x5e7, 0);
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_CAPTION.0 as isize));
-            let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(NON_CLIENT_STYLE as isize));
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
     }
 }
@@ -423,7 +446,7 @@ fn main() {
                 .title("Foundation Sunshine")
                 .inner_size(WIDTH + 2.0 * ROOM, HEIGHT + 2.0 * ROOM)
                 .min_inner_size(MIN_WIDTH + 2.0 * ROOM, MIN_HEIGHT + 2.0 * ROOM)
-                .resizable(true)
+                .resizable(false)
                 .maximizable(false)
                 // No OS caption or frame at all: the page draws the title bar, its buttons, the rounded surface and the
                 // shadow on a transparent window (as the Panel's popup windows, ctx_popup.rs).

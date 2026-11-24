@@ -284,6 +284,8 @@ static AGENT: std::sync::LazyLock<Mutex<State>> =
 pub struct ClipboardStatus {
     /// Local user-session agent is running (watcher + SSE pump active).
     pub agent_active: bool,
+    /// Panel-local preference. This is separate from Sunshine's host setting.
+    pub local_enabled: bool,
     /// Sunshine service has clipboard sync allowed (config not force-disabled).
     pub service_allowed: Option<bool>,
     pub transport_state: &'static str,
@@ -1694,7 +1696,14 @@ pub fn start() -> Result<(), String> {
     let busy = Arc::new(AtomicI64::new(0));
 
     // Spawn watcher thread (blocking; the crate's start_watch() is sync).
-    let (shutdown_tx, watcher_handle) = spawn_watcher_thread(&st.echo, &busy)?;
+    let (shutdown_tx, watcher_handle) = match spawn_watcher_thread(&st.echo, &busy) {
+        Ok(handles) => handles,
+        Err(e) => {
+            // The run never came up: report disconnected instead of leaving a stuck CONNECTING state.
+            set_transport_state(TRANSPORT_DISCONNECTED, Some(e.clone()));
+            return Err(e);
+        }
+    };
 
     let sse_alive = Arc::new(AtomicBool::new(false));
     let heartbeat_alive = Arc::new(AtomicBool::new(false));
@@ -1756,6 +1765,15 @@ pub fn stop() {
     info!("clipboard sync agent stopped");
 }
 
+pub fn set_enabled(enabled: bool) -> Result<(), String> {
+    if enabled {
+        start()
+    } else {
+        stop();
+        Ok(())
+    }
+}
+
 /// The statistics record of the run (clipboard_health), through the host: its own sender owns the identity and the two choices, so a choice that is off sends nothing.
 async fn send_health_event() {
     health::mark_sent();
@@ -1811,11 +1829,18 @@ pub fn auto_start() {
 #[tauri::command]
 pub async fn clipboard_sync_status() -> ClipboardStatus {
     // the host's own answer: its setting, whether it has an agent subscribed right now, and a failure to ask is a word, not "allowed"
-    let (service_allowed, host_alive_now, session_count, capability_error) = match capability_call().await {
-        Ok(answer) => (answer.clipboard_sync, answer.gui_alive, answer.session_count, "none"),
-        Err((class, _)) => (None, None, None, class.word()),
+    let local_enabled =
+        crate::desktop_settings::load_desktop_settings_from_disk().clipboard_sync_enabled;
+    let (service_allowed, host_alive_now, session_count, capability_error) = if local_enabled {
+        match capability_call().await {
+            Ok(answer) => (answer.clipboard_sync, answer.gui_alive, answer.session_count, "none"),
+            Err((class, _)) => (None, None, None, class.word()),
+        }
+    } else {
+        (None, None, None, "none")
     };
     // read after the call: it can take seconds, and the state, the time and the heartbeat facts may have moved meanwhile
+    let local_agent_active = agent_active();
     let now = health::now_ms();
     let stream_state = transport_state_name(TRANSPORT_STATE.load(Ordering::Acquire));
     let last_connected_at_ms = LAST_CONNECTED_AT_MS.load(Ordering::Acquire);
@@ -1826,7 +1851,8 @@ pub async fn clipboard_sync_status() -> ClipboardStatus {
         transport_state = "degraded";
     }
     ClipboardStatus {
-        agent_active: agent_active(),
+        agent_active: local_agent_active,
+        local_enabled,
         service_allowed,
         transport_state,
         last_connected_at_ms: (last_connected_at_ms > 0).then_some(last_connected_at_ms),

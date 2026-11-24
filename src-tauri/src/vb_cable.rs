@@ -114,70 +114,11 @@ fn system_powershell_modules() -> PathBuf {
     crate::elevation::system_binary(r"WindowsPowerShell\v1.0\Modules")
 }
 
-// Query the live PnP tree and driver service; neither the driver version nor
-// the number of audio endpoints determines whether the device is installed.
-// When both are absent, also check for a package left in the driver store.
 #[cfg(target_os = "windows")]
-const DEVICE_PROBE_SCRIPT: &str = r#"
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-try {
-  $nodes = @(Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object { @($_.HardwareID) -icontains 'VBAudioVACWDM' })
-  $services = @(Get-CimInstance -ClassName Win32_SystemDriver -Filter "Name='VBAudioVACMME'" -ErrorAction Stop)
-  if ($services.Count -gt 1 -or $nodes.Count -gt 1) { $state = 'unavailable' }
-  elseif ($nodes.Count -eq 0) {
-    if ($services.Count) { $state = 'pending' }
-    else {
-      # PnPUtil can enumerate third-party drivers without elevation. Match the
-      # original INF name, which is independent of the Windows display language.
-      $drivers = @(& (Join-Path $env:SystemRoot 'System32\pnputil.exe') /enum-drivers 2>$null)
-      if ($LASTEXITCODE -ne 0) { throw 'driver store enumeration failed' }
-      $remaining = @($drivers | Where-Object { $_ -match '(?i)^\s*[^:]+:\s*vbmmecable(?:64)?_(?:win[0-9]+|vista|xp|2003)\.inf\s*$' })
-      $state = if ($remaining.Count) { 'pending' } else { 'missing' }
-    }
-  }
-  elseif ($nodes[0].Class -ne 'MEDIA' -or $nodes[0].Manufacturer -ine 'VB-Audio Software') { $state = 'unavailable' }
-  else {
-    $problem = @(Get-PnpDeviceProperty -InstanceId $nodes[0].InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction Stop)
-    if ($problem.Count -ne 1) { throw 'device problem state unavailable' }
-    if ([int]$problem[0].Data -eq 22) { $state = 'disabled' }
-    elseif ([int]$problem[0].Data -eq 0 -and $nodes[0].Status -eq 'OK' -and $services.Count -eq 1 -and $services[0].State -eq 'Running') { $state = 'installed' }
-    else { $state = 'unavailable' }
-  }
-  [Console]::Write($state)
-} catch { exit 1 }
-"#;
+pub(crate) mod probe;
 
 #[cfg(target_os = "windows")]
-async fn probe_device() -> Result<String, String> {
-    use std::process::Stdio;
-    use tokio::process::Command;
-
-    let child = Command::new(crate::elevation::system_binary(
-        r"WindowsPowerShell\v1.0\powershell.exe",
-    ))
-    .args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        DEVICE_PROBE_SCRIPT,
-    ])
-    .env("PSModulePath", system_powershell_modules())
-    .stdin(Stdio::null())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::null())
-    .kill_on_drop(true)
-    .creation_flags(0x08000000)
-    .spawn()
-    .map_err(|error| format!("VB-CABLE: device check could not start: {error}"))?;
-    let stdout = wait_for_device_probe(child, DEVICE_PROBE_TIMEOUT).await?;
-    let state = String::from_utf8_lossy(&stdout).trim().to_string();
-    match state.as_str() {
-        "missing" | "installed" | "disabled" | "unavailable" | "pending" => Ok(state),
-        _ => Err("VB-CABLE: unexpected device check result".into()),
-    }
-}
+use probe::probe_device;
 
 #[cfg(not(target_os = "windows"))]
 async fn probe_device() -> Result<String, String> {
@@ -195,11 +136,21 @@ async fn wait_for_device_probe(
         .take()
         .ok_or("VB-CABLE: device check has no output")?;
     let result = tokio::time::timeout(budget, async {
-        // The script returns only a state string. Read concurrently with wait
-        // so an unexpected large output cannot fill the pipe indefinitely.
-        let mut bytes = Vec::new();
-        let mut limited = stdout.take(4096);
-        let (_, status) = tokio::try_join!(limited.read_to_end(&mut bytes), child.wait())?;
+        // pnputil can return more than one pipe buffer. Discard an incomplete
+        // snapshot rather than reporting a missing driver.
+        const MAX_OUTPUT: usize = 16 * 1024 * 1024;
+        let read = async {
+            let mut bytes = Vec::new();
+            stdout
+                .take((MAX_OUTPUT + 1) as u64)
+                .read_to_end(&mut bytes)
+                .await?;
+            if bytes.len() > MAX_OUTPUT {
+                return Err(std::io::Error::other("device check output is too large"));
+            }
+            Ok(bytes)
+        };
+        let (bytes, status) = tokio::try_join!(read, child.wait())?;
         Ok::<_, std::io::Error>((status, bytes))
     })
     .await;
@@ -1080,115 +1031,5 @@ exit 0
         assert!(!pack43_supports_native_machine(0xaa64));
         assert!(!pack43_supports_native_machine(0x014c));
         assert!(!pack43_supports_native_machine(0));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn device_probe_recognizes_old_and_new_drivers_independently_of_endpoints() {
-        use std::os::windows::process::CommandExt;
-        use std::process::Command;
-
-        for (version, extra_endpoint, problem, expected) in [
-            ("1.0.3.5", false, 0, "installed"),
-            ("3.3.1.7", true, 0, "installed"),
-            ("3.5.2.0", true, 0, "installed"),
-            ("1.0.3.5", false, 22, "disabled"),
-        ] {
-            let mock = r#"
-function Get-PnpDevice {
-  param([switch]$PresentOnly, $ErrorAction)
-  [pscustomobject]@{ HardwareID = @('VBAudioVACWDM'); Class = 'MEDIA'; Manufacturer = 'VB-Audio Software'; Status = 'OK'; InstanceId = 'ROOT\MEDIA\0000'; DriverVersion = '{VERSION}' }
-  if ('{EXTRA}' -eq 'true') { [pscustomobject]@{ HardwareID = @('SWD\MMDEVAPI'); Class = 'AudioEndpoint'; FriendlyName = 'CABLE In 16 Ch' } }
-}
-function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) [pscustomobject]@{ State = 'Running' } }
-function Get-PnpDeviceProperty { param($InstanceId, $KeyName, $ErrorAction) [pscustomobject]@{ Data = {PROBLEM} } }
-"#
-            .replace("{VERSION}", version)
-            .replace("{EXTRA}", if extra_endpoint { "true" } else { "false" })
-            .replace("{PROBLEM}", &problem.to_string());
-            let diagnostic_probe = super::DEVICE_PROBE_SCRIPT.replace(
-                "} catch { exit 1 }",
-                "} catch { [Console]::Error.Write($_.Exception.ToString()); exit 1 }",
-            );
-            let output = Command::new(crate::elevation::system_binary(
-                r"WindowsPowerShell\v1.0\powershell.exe",
-            ))
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &(mock + &diagnostic_probe),
-            ])
-            .creation_flags(0x08000000)
-            .output()
-            .expect("launch mocked device probe");
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert_eq!(
-                String::from_utf8_lossy(&output.stdout).trim(),
-                expected,
-                "driver {version}"
-            );
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn device_probe_finds_orphaned_driver_packages_without_a_device_or_service() {
-        use std::os::windows::process::CommandExt;
-        use std::process::Command;
-
-        let real_command =
-            "& (Join-Path $env:SystemRoot 'System32\\pnputil.exe') /enum-drivers 2>$null";
-        assert!(super::DEVICE_PROBE_SCRIPT.contains(real_command));
-        let probe = super::DEVICE_PROBE_SCRIPT.replace(real_command, "Get-MockedDriverPackages");
-        for (line, exit_code, expected) in [
-            ("Original Name: vbMmeCable64_win7.inf", 0, Some("pending")),
-            ("Original Name: vbMmeCable64_win10.inf", 0, Some("pending")),
-            (
-                "Original Name: vendor-vbmmecable64_win10.inf",
-                0,
-                Some("missing"),
-            ),
-            (
-                "Original Name: vbmmecable64_win10.inf.fake",
-                0,
-                Some("missing"),
-            ),
-            ("Original Name: unrelated.inf", 0, Some("missing")),
-            ("", 1, None),
-        ] {
-            let mock = format!(
-                r#"
-function Get-PnpDevice {{ param([switch]$PresentOnly, $ErrorAction) }}
-function Get-CimInstance {{ param($ClassName, $Filter, $ErrorAction) }}
-function Get-MockedDriverPackages {{ $global:LASTEXITCODE = {exit_code}; '{line}' }}
-"#
-            );
-            let output = Command::new(crate::elevation::system_binary(
-                r"WindowsPowerShell\v1.0\powershell.exe",
-            ))
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &(mock + &probe),
-            ])
-            .creation_flags(0x08000000)
-            .output()
-            .expect("launch mocked driver-store probe");
-            if let Some(state) = expected {
-                assert!(output.status.success(), "probe failed for {line}");
-                assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), state);
-            } else {
-                assert!(
-                    !output.status.success(),
-                    "failed enumeration must not report missing"
-                );
-            }
-        }
     }
 }

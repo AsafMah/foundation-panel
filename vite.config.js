@@ -98,6 +98,7 @@ export default defineConfig(() => ({
         toolWindow: resolve(rendererSrcPath, 'tool-window/index.html'),
         desktop: resolve(rendererSrcPath, 'desktop/index.html'),
         launchSplash: resolve(rendererSrcPath, 'launch-splash/index.html'),
+        pin: resolve(rendererSrcPath, 'pin/index.html'),
       },
       output: {
         // The launch splash window is on screen with the game's launch and its page loads in the tray state: it must not pull the one big shared

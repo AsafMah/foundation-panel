@@ -36,9 +36,13 @@
         <MGroup>
           <MItem icon="content_paste" :title="t.sidebar.clipboardSync">
             <template #trail>
-              <MChip :tone="clipboardSyncEnabled ? 'ok' : clipboardSyncState === 'degraded' ? 'warn' : 'neutral'" :icon="clipboardSyncEnabled ? 'check_circle' : clipboardSyncState === 'degraded' ? 'warning' : ''">{{ clipboardSyncEnabled ? t.sidebar.connected : clipboardSyncState === 'degraded' ? t.sidebar.degraded : t.sidebar.notConnected }}</MChip>
+              <MChip :tone="clipboardSyncWorking ? 'ok' : clipboardSyncState === 'degraded' && !clipboardSyncDisabled ? 'warn' : 'neutral'" :icon="clipboardSyncWorking ? 'check_circle' : clipboardSyncState === 'degraded' && !clipboardSyncDisabled ? 'warning' : ''">{{ clipboardSyncWorking ? t.sidebar.connected : clipboardSyncDisabled ? t.sidebar.off : clipboardSyncState === 'off' ? t.sidebar.off : clipboardSyncState === 'degraded' ? t.sidebar.degraded : clipboardSyncState === 'disabled' ? t.sidebar.hostOff : t.sidebar.notConnected }}</MChip>
               <MButton variant="outlined" size="sm" @click="actions.showClipboardSyncStatus">{{ t.sidebar.viewStatus }}</MButton>
+              <MButton variant="text" size="sm" icon="settings" @click="actions.openClipboardSyncSetting">{{ t.sidebar.openSetting }}</MButton>
             </template>
+          </MItem>
+          <MItem icon="content_paste" :title="t.settings.clipboardSyncEnabled" :text="t.settings.clipboardSyncEnabledDesc">
+            <template #trail><MSwitch :model-value="Boolean(desktopSettings.clipboardSyncEnabled)" :label="t.settings.clipboardSyncEnabled" :disabled="clipboardSyncSettingBusy" @update:model-value="setClipboardSyncSetting" /></template>
           </MItem>
         </MGroup>
       </MSection>
@@ -59,9 +63,13 @@
       </MSection>
     </template>
     <template v-else>
+      <!-- the four things a person comes to 帮助与关于 for, first; the update state is on its tile, and 关于 says it on its second line -->
+      <MSection>
+        <MHelpTiles :locale="locale" :update="update" @check="emit('check-update')" @open-update="emit('open-update')" @doctor="emit('open-doctor')" @downloads="emit('webui-navigate', '/downloads')" />
+      </MSection>
       <MSection>
         <MGroup>
-          <MItem action icon="info" :title="aboutText.title" :text="'Foundation Sunshine ' + currentVersion" @click="emit('open-about')" />
+          <MItem action icon="info" :title="aboutText.title" :text="aboutSub" @click="emit('open-about')" />
           <MItem action icon="rocket_launch" :title="guide.guide" :text="guide.helpRow" @click="emit('open-guide')" />
           <MItem action icon="tv" :title="t.sidebar.openBigScreen" :text="t.sidebar.openBigScreenHelp" data-help-row="bigScreen" @click="openDesktop" />
           <MItem action icon="lightbulb" :title="coach.rerun" @click="startCoach" />
@@ -71,10 +79,7 @@
       </MSection>
       <MSection>
         <MGroup>
-          <MItem action icon="download" :title="t.sidebar.clientDownloads" @click="emit('webui-navigate', '/downloads')" />
           <MItem action icon="keyboard" :title="t.toolbar.shortcutGuide" @click="shortcutsOpen = true" />
-          <MItem action icon="health_and_safety" :title="doctorTexts(locale).start" @click="emit('open-doctor')" />
-          <MFeedbackRow :locale="locale" />
           <MItem action icon="bug_report" :title="t.m3e.system.troubleshooting" @click="emit('webui-navigate', '/troubleshooting')" />
           <MItem action icon="public" :title="t.sidebar.officialWebsite" @click="actions.openUrl('https://www.alkaidlab.com/')"><template #trail><MIcon name="open_in_new" /></template></MItem>
           <MItem action icon="favorite" :title="t.m3e.home.sponsor" @click="sponsorOpen = true" />
@@ -88,7 +93,8 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { MPage, MSection, MGroup, MItem, MSourceList, MChoiceItem, MSeg, MChip, MButton, MIcon, MFieldItem, MBanner, MSupportSheet, useNotify, aboutTexts, coachTexts, guideTexts, homeTexts, remoteTexts, useGuideCard, doctorTexts, MFeedbackRow } from 'foundation-ui/vue'
+import { MPage, MSection, MGroup, MItem, MSourceList, MChoiceItem, MSeg, MChip, MButton, MIcon, MFieldItem, MBanner, MSupportSheet, MSwitch, useNotify, aboutTexts, coachTexts, guideTexts, homeTexts, remoteTexts, useGuideCard, MHelpTiles } from 'foundation-ui/vue'
+import { helpTileTexts, aboutLine } from 'foundation-ui/help-tiles'
 import { SPONSORS } from '../config/sponsors.js'
 import ShortcutsSheet from './m3e/ShortcutsSheet.vue'
 import { usePanelPart } from '../composables/panelParts.js'
@@ -99,6 +105,7 @@ import PanelOptions from './m3e/PanelOptions.vue'
 import { ROUTES } from '../composables/useRouter.js'
 import { useUpdateCheckTime } from '../composables/useUpdateCheckTime.js'
 import { useUpdateSource } from '../composables/useUpdateSource.js'
+import { desktopSettings, saveDesktopSettings } from '../desktop/composables/useDesktopSettings.js'
 import { MIRRORCHYAN_CDK_URL, UPDATE_SOURCES, cdkView, updateSourceTexts } from 'foundation-ui/update'
 const props = defineProps({
   page: { type: String, required: true },
@@ -116,10 +123,26 @@ const props = defineProps({
   clipboardSyncState: { type: String, default: 'unknown' },
   isAdmin: Boolean,
   actions: { type: Object, required: true },
+  /** the state of the update check for the tile of 软件更新 and the second line of 关于: { state, installed, next, checkedAt } (SidebarMenu) */
+  update: { type: Object, default: () => ({ state: 'idle' }) },
 })
-const emit = defineEmits(['theme-change', 'locale-change', 'channel-change', 'webui-navigate', 'open-guide', 'open-remote', 'open-about', 'open-doctor'])
+const emit = defineEmits(['theme-change', 'locale-change', 'channel-change', 'webui-navigate', 'open-guide', 'open-remote', 'open-about', 'open-doctor', 'check-update', 'open-update'])
 const { t } = useI18n()
 const notify = useNotify()
+const clipboardSyncWorking = computed(() => Boolean(desktopSettings.value.clipboardSyncEnabled) && props.clipboardSyncEnabled)
+const clipboardSyncDisabled = computed(() => desktopSettings.value.clipboardSyncEnabled === false)
+const clipboardSyncSettingBusy = ref(false)
+const setClipboardSyncSetting = async (enabled) => {
+  if (clipboardSyncSettingBusy.value) return
+  clipboardSyncSettingBusy.value = true
+  try {
+    await saveDesktopSettings({ ...desktopSettings.value, clipboardSyncEnabled: Boolean(enabled) })
+  } catch {
+    notify.snack(t.value.settings.saveError)
+  } finally {
+    clipboardSyncSettingBusy.value = false
+  }
+}
 const openDesktop = () => openBigScreenWithNotice((m) => notify.snack(m), t.value.sidebar.openBigScreenFailed)
 // The guided first run can be opened again from here; its texts come with the package (zh and en)
 const guide = computed(() => guideTexts(props.locale))
@@ -127,6 +150,7 @@ const remote = computed(() => remoteTexts(props.locale))
 const coach = computed(() => coachTexts(props.locale))
 const startCoach = () => window.dispatchEvent(new CustomEvent('foundation-coach-start'))
 const aboutText = computed(() => aboutTexts(props.locale))
+const aboutSub = computed(() => aboutLine(props.currentVersion || props.update.installed, props.update, helpTileTexts(props.locale)))
 // the get started card of the overview comes back from here
 const startText = computed(() => homeTexts(props.locale))
 const startCard = useGuideCard('panel-home', () => [])

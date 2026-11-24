@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PIN</title>
+    <style>
+      /* the window is transparent and covers the display: only the scrim and the card are drawn */
+      html, body { width: 100vw; height: 100vh; margin: 0; overflow: hidden; background: transparent; user-select: none; -webkit-user-select: none; color-scheme: light dark; }
+      #app { width: 100%; height: 100%; }
+    </style>
+    <script>
+      // the colour scheme of the system, before the first paint (the transparent window shows the desktop: a light card on a dark page must not flash)
+      ;(function () {
+        var dark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        var root = document.documentElement
+        root.setAttribute('data-bs-theme', dark ? 'dark' : 'light')
+        root.setAttribute('data-theme', dark ? 'dark' : 'light')
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

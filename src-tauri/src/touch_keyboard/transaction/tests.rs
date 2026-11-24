@@ -27,6 +27,7 @@ struct Fixture {
     notification_fail_value: Option<u32>,
     notification_fail_after_publish: bool,
     notification_ignore_publish: bool,
+    notification_unpublished: bool,
     notifications: Vec<(u32, BTreeMap<String, RawValue>)>,
 }
 
@@ -192,13 +193,16 @@ impl Notification for FakeNotification {
         }
     }
 
-    fn read(&mut self, session_id: u32) -> io::Result<u32> {
+    fn read(&mut self, session_id: u32) -> io::Result<Option<u32>> {
         let mut fixture = self.0.borrow_mut();
         fixture.session_id = session_id;
         if fixture.notification_read_failure {
             return Err(permission());
         }
-        Ok(fixture.notification_value)
+        if fixture.notification_unpublished {
+            return Ok(None);
+        }
+        Ok(Some(fixture.notification_value))
     }
 
     fn publish(&mut self, _: u32, value: u32) -> io::Result<()> {
@@ -211,7 +215,6 @@ impl Notification for FakeNotification {
         )
         .expect("notification without durable intent");
         assert!(parsed.intents.contains(&NOTIFICATION_INDEX));
-        assert!(parsed.snapshot.notification_original.is_some());
         if fixture.notification_fail_value == Some(value) {
             return Err(permission());
         }
@@ -219,6 +222,7 @@ impl Notification for FakeNotification {
             return Ok(());
         }
         fixture.notification_value = value;
+        fixture.notification_unpublished = false;
         let values = fixture.values.clone();
         fixture.notifications.push((value, values));
         if fixture.notification_fail_after_publish {
@@ -626,4 +630,134 @@ fn damaged_tail_does_not_prevent_restoring_a_completed_notification_intent() {
     assert_eq!(shared.borrow().values, original);
     assert_eq!(shared.borrow().notification_value, 2);
     assert!(shared.borrow().journal.is_none());
+}
+
+#[test]
+fn uninitialized_notification_is_initialized_and_restored_from_registry() {
+    let shared = fixture();
+    shared.borrow_mut().values.insert(KEYS[0].name.into(), dword(2));
+    shared.borrow_mut().notification_unpublished = true;
+    let original = shared.borrow().values.clone();
+    let mut tx = transaction(&shared);
+    tx.reconcile(Some(false), 11).unwrap();
+    assert_eq!(shared.borrow().values.get(KEYS[0].name), Some(&dword(0)));
+    assert_eq!(shared.borrow().notification_value, 0);
+    tx.reconcile(None, 11).unwrap();
+    let data = shared.borrow();
+    assert_eq!(data.values, original);
+    assert_eq!(data.notification_value, 2);
+    assert!(data.journal.is_none());
+    let sequence: Vec<u32> = data.notifications.iter().map(|(value, _)| *value).collect();
+    assert_eq!(sequence, [0, 2]);
+}
+
+#[test]
+fn uninitialized_notification_with_default_registry_restores_to_never() {
+    let shared = fixture();
+    shared.borrow_mut().values.remove(KEYS[0].name);
+    shared.borrow_mut().notification_unpublished = true;
+    let mut tx = transaction(&shared);
+    tx.reconcile(Some(true), 11).unwrap();
+    assert_eq!(shared.borrow().values.get(KEYS[0].name), Some(&dword(2)));
+    assert_eq!(shared.borrow().notification_value, 2);
+    tx.reconcile(None, 11).unwrap();
+    let data = shared.borrow();
+    assert!(!data.values.contains_key(KEYS[0].name));
+    assert_eq!(data.notification_value, 0);
+    assert!(data.journal.is_none());
+}
+
+#[test]
+fn crash_recovery_restores_a_state_that_started_uninitialized() {
+    let shared = fixture();
+    shared.borrow_mut().values.insert(KEYS[0].name.into(), dword(2));
+    shared.borrow_mut().notification_unpublished = true;
+    let original = shared.borrow().values.clone();
+    {
+        let mut tx = transaction(&shared);
+        tx.reconcile(Some(false), 11).unwrap();
+    }
+    assert_eq!(shared.borrow().notification_value, 0);
+    transaction(&shared).recover_on_start().unwrap();
+    let data = shared.borrow();
+    assert_eq!(data.values, original);
+    assert_eq!(data.notification_value, 2);
+    assert!(data.journal.is_none());
+}
+
+#[test]
+fn externally_published_value_is_preserved_when_original_was_uninitialized() {
+    let shared = fixture();
+    shared.borrow_mut().values.insert(KEYS[0].name.into(), dword(2));
+    shared.borrow_mut().notification_unpublished = true;
+    let original = shared.borrow().values.clone();
+    let mut tx = transaction(&shared);
+    tx.reconcile(Some(false), 11).unwrap();
+    {
+        let mut data = shared.borrow_mut();
+        data.notification_unpublished = false;
+        data.notification_value = 1;
+    }
+    tx.reconcile(None, 11).unwrap();
+    let data = shared.borrow();
+    assert_eq!(data.values, original);
+    assert_eq!(data.notification_value, 1);
+    let sequence: Vec<u32> = data.notifications.iter().map(|(value, _)| *value).collect();
+    assert_eq!(sequence, [0]);
+    assert!(data.journal.is_none());
+}
+
+#[test]
+fn externally_changed_registry_value_drives_uninitialized_notification_restore() {
+    let shared = fixture();
+    shared.borrow_mut().values.insert(KEYS[0].name.into(), dword(1));
+    shared.borrow_mut().notification_unpublished = true;
+    let mut tx = transaction(&shared);
+    tx.reconcile(Some(false), 11).unwrap();
+    shared
+        .borrow_mut()
+        .values
+        .insert(KEYS[0].name.into(), dword(2));
+
+    tx.reconcile(None, 11).unwrap();
+
+    let data = shared.borrow();
+    assert_eq!(data.values.get(KEYS[0].name), Some(&dword(2)));
+    assert_eq!(data.notification_value, 2);
+    let sequence: Vec<u32> = data.notifications.iter().map(|(value, _)| *value).collect();
+    assert_eq!(sequence, [0, 2]);
+    assert!(data.journal.is_none());
+}
+
+#[test]
+fn failed_publication_with_uninitialized_state_rolls_back_and_retries() {
+    let shared = fixture();
+    shared.borrow_mut().values.insert(KEYS[0].name.into(), dword(2));
+    shared.borrow_mut().notification_unpublished = true;
+    shared.borrow_mut().notification_fail_after_publish = true;
+    let original = shared.borrow().values.clone();
+    let mut tx = transaction(&shared);
+    assert!(tx.reconcile(Some(false), 11).is_err());
+    {
+        let data = shared.borrow();
+        assert_eq!(data.values, original);
+        assert_eq!(data.notification_value, 2);
+        assert!(data.journal.is_none());
+    }
+    shared.borrow_mut().notification_fail_after_publish = false;
+    tx.reconcile(Some(false), 11).unwrap();
+    tx.reconcile(None, 11).unwrap();
+    assert_eq!(shared.borrow().notification_value, 2);
+}
+
+#[test]
+fn journal_with_invalid_notification_value_is_rejected() {
+    let snapshot = format!("{{\"version\":1,\"session_id\":11,\"logon_time\":100,\"enabled\":false,\"values\":[{{\"name\":\"{}\",\"original\":{{\"kind\":4,\"bytes\":[2,0,0,0]}}}}],\"notification_original\":3}}\n", KEYS[0].name);
+    let shared = fixture();
+    shared.borrow_mut().journal = Some(snapshot.into_bytes());
+    let original = shared.borrow().values.clone();
+    let mut tx = transaction(&shared);
+    assert!(tx.recover_on_start().is_err());
+    assert_eq!(shared.borrow().values, original);
+    assert!(shared.borrow().journal.is_some());
 }

@@ -53,8 +53,8 @@ const messages = {
     replaceFile: '更换组件文件',
     installSetup: '安装并配置',
     allowUse: '允许串流使用 ',
-    nrPermissionHint:
-      '全局默认开关：开启后，“自动”模式的应用串流默认启用 DLSS NR；应用“开启/关闭”优先。串流中的开关仅临时生效。',
+    nrPermissionHint: '控制当前和后续串流的 DLSS NR。',
+    installNr: '安装组件',
     hdrPermissionHint:
       '允许应用使用 SDR 转 HDR 功能；是否启用由应用配置决定，下次连接时生效。',
     appDefaults: '应用默认设置',
@@ -97,7 +97,7 @@ const messages = {
     record: '请按下组合键…',
     recordHint:
       '请按下含 Ctrl、Alt 或 Shift 的组合键。Esc 取消，30 秒后自动退出。',
-    keyHint: '浮层隐藏时仍可使用，仅作用于选定串流。',
+    keyHint: '浮层隐藏时也可切换全局 DLSS NR。',
     saved: '已保存',
     local: '本机设置 · 自动保存',
     preview: '浮层预览',
@@ -109,7 +109,7 @@ const messages = {
     noSession: '等待串流',
     disconnected: '主机未连接',
     refresh: '重试',
-    sessionHint: '实时调节只影响选定会话，不修改应用默认设置。',
+    sessionHint: '强度和处理比例应用于选定串流。',
     output: '输出格式',
     scale: '处理比例',
     enhancement: '画面增强',
@@ -142,8 +142,8 @@ const messages = {
     replaceFile: 'Replace component file',
     installSetup: 'Install & set up',
     allowUse: 'Allow streams to use ',
-    nrPermissionHint:
-      'Global default: apps set to Auto start with DLSS NR; explicit On/Off takes priority. The in-stream switch is temporary.',
+    nrPermissionHint: 'Control DLSS NR for current and future streams.',
+    installNr: 'Install component',
     hdrPermissionHint:
       'Allows apps to use SDR-to-HDR conversion. Per-app settings take effect on the next connection.',
     appDefaults: 'Application defaults',
@@ -188,7 +188,7 @@ const messages = {
     record: 'Press a shortcut…',
     recordHint:
       'Use Ctrl, Alt or Shift. Esc cancels; capture expires after 30 seconds.',
-    keyHint: 'Works with the overlay hidden. Only affects the selected stream.',
+    keyHint: 'The NR shortcut switches DLSS NR globally, even with the overlay hidden.',
     saved: 'Saved',
     local: 'Local settings · Saved automatically',
     preview: 'Overlay preview',
@@ -201,7 +201,7 @@ const messages = {
     noSession: 'Waiting for a stream',
     disconnected: 'Host disconnected',
     refresh: 'Retry',
-    sessionHint: 'Changes affect the selected session only, not app defaults.',
+    sessionHint: 'Intensity and processing scale apply to the selected stream.',
     output: 'Output format',
     scale: 'Processing scale',
     enhancement: 'Enhancement',

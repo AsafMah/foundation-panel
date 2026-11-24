@@ -63,6 +63,10 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
         .find(|arg| arg.starts_with("--url="))
         .map_or(false, |arg| arg.contains("/pin"));
 
+    // A click on a notification that started this panel (notify_action.rs). The PIN entry is a window of its own: the main window is not made for it, as it is not for `--url=.../pin`.
+    let startup_notify_action = crate::notify_action::NotifyAction::from_args(&args);
+    let startup_opens_pin_only = startup_notify_action == Some(crate::notify_action::NotifyAction::OpenPin);
+
     let app_handle = app.handle().clone();
     if !crate::webview_runtime::ensure_available() {
         info!("WebView2 Runtime is unavailable; native fallback was shown");
@@ -81,7 +85,9 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
     update::init_update_preferences(&app_handle)?;
     if !crate::test_isolation::active() {
         crate::install_integrity::start(app_handle.clone());
-        crate::clipboard::auto_start();
+        if desktop_settings.clipboard_sync_enabled {
+            crate::clipboard::auto_start();
+        }
         #[cfg(target_os = "windows")]
         crate::text_context::start(desktop_settings.text_context_enabled);
     }
@@ -107,7 +113,7 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
             windows::create_desktop_window(&app_handle)?;
         }
         windows::create_main_window_hidden(&app_handle)?;
-    } else if !show_toolbar && !url_contains_pin && !is_send_to_client && !is_quick_share_folder {
+    } else if !show_toolbar && !url_contains_pin && !startup_opens_pin_only && !is_send_to_client && !is_quick_share_folder {
         if start_minimized {
             windows::create_main_window_hidden(&app_handle)?;
         } else {
@@ -185,6 +191,13 @@ pub fn setup_application(app: &mut App) -> Result<(), Box<dyn std::error::Error>
             if let Err(e) = windows::open_pin_window(&app_handle) {
                 error!("❌ 创建 PIN 配对窗口失败: {}", e);
             }
+        }
+
+        // 通知点击启动的面板：现在做通知要求的事（notify_action.rs）
+        if let Some(action) = startup_notify_action {
+            info!("A notification click started the panel: {action:?}");
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            tray::dispatch_notify_action(&app_handle, action);
         }
 
         // 工具栏窗口（非桌面模式下）
@@ -378,6 +391,12 @@ fn setup_menu_event_handler(app: &mut App) {
 pub fn handle_single_instance(app: &AppHandle, args: Vec<String>) {
     info!("🔔 检测到第二个实例启动，激活现有窗口");
     info!("   启动参数: {:?}", args);
+
+    // A click on a notification, from the notification centre or from a toast on screen: Windows started a second panel with the address of the notification (notify_action.rs).
+    if let Some(action) = crate::notify_action::NotifyAction::from_args(&args) {
+        tray::dispatch_notify_action(app, action);
+        return;
+    }
 
     let send_to_client_paths = crate::file_transfer::parse_send_to_client_args(&args);
     if !send_to_client_paths.is_empty() {

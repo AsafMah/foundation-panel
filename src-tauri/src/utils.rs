@@ -365,6 +365,11 @@ pub fn open_device_manager() -> Result<bool, String> {
 /// Start the Sparxie program in this session. Sparxie is a window: it belongs to the person who is signed in, so
 /// the Control Panel (a process of that session) starts it and the host service never does. Only the bundled main
 /// window may call this (local-only command), and only a file named like Sparxie's own programs is started.
+///
+/// Sparxie writes its configuration beside its launcher, and the component sits under the host's install folder,
+/// which a standard user cannot write to. When the Control Panel is not elevated and cannot write to that folder,
+/// Sparxie is started with the `runas` verb so Windows shows the person's UAC prompt; otherwise it starts like
+/// from Explorer and is not elevated (see `sparxie_open`). A refused prompt returns `Ok(false)`.
 #[tauri::command]
 pub fn open_sparxie(exe: String) -> Result<bool, String> {
     let raw = exe.trim().trim_matches('"');
@@ -389,41 +394,82 @@ pub fn open_sparxie(exe: String) -> Result<bool, String> {
 
     #[cfg(target_os = "windows")]
     {
-        use ::windows::Win32::Foundation::HWND;
-        use ::windows::Win32::UI::Shell::ShellExecuteW;
-        use ::windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-        use ::windows::core::PCWSTR;
+        use crate::sparxie_open::{self, StartFailure, StartVerb};
 
-        fn to_wide(value: &std::ffi::OsStr) -> Vec<u16> {
-            use std::os::windows::ffi::OsStrExt;
-            value.encode_wide().chain(std::iter::once(0)).collect()
+        let panel_elevated = is_running_as_admin().unwrap_or(false);
+        let data_dir = sparxie_open::data_directory(&path);
+        let writable = sparxie_open::directory_is_writable(&data_dir);
+        let mut verb = sparxie_open::choose_verb(panel_elevated, writable);
+        info!(
+            "[sparxie] starting with the {} verb (panel elevated: {panel_elevated}, data folder writable: {writable})",
+            verb.as_str()
+        );
+        loop {
+            match shell_execute_sparxie(&path, verb) {
+                Ok(()) => return Ok(true),
+                Err(StartFailure::Declined) => {
+                    info!("[sparxie] the UAC prompt was declined");
+                    return Ok(false);
+                }
+                Err(StartFailure::NeedsElevation) if verb == StartVerb::Open => {
+                    info!("[sparxie] Windows asked for administrator rights, starting again with runas");
+                    verb = StartVerb::Runas;
+                }
+                Err(failure) => {
+                    let code = match failure {
+                        StartFailure::Other(code) => code,
+                        _ => 0,
+                    };
+                    error!("[sparxie] did not start with the {} verb: {failure:?}", verb.as_str());
+                    return Err(format!("Sparxie did not start: Windows error {code}"));
+                }
+            }
         }
-
-        // Like opening it from Explorer: a program that asks for administrator rights shows the person's own prompt.
-        let operation = to_wide(std::ffi::OsStr::new("open"));
-        let file = to_wide(path.as_os_str());
-        let directory = path.parent().map(|dir| to_wide(dir.as_os_str()));
-        let result = unsafe {
-            ShellExecuteW(
-                Some(HWND(std::ptr::null_mut())),
-                PCWSTR(operation.as_ptr()),
-                PCWSTR(file.as_ptr()),
-                PCWSTR::null(),
-                directory
-                    .as_ref()
-                    .map_or(PCWSTR::null(), |dir| PCWSTR(dir.as_ptr())),
-                SW_SHOWNORMAL,
-            )
-        };
-        let code = result.0 as isize;
-        if code <= 32 {
-            return Err(format!("Sparxie did not start: ShellExecuteW code {code}"));
-        }
-        Ok(true)
     }
     #[cfg(not(target_os = "windows"))]
     {
         Err("Sparxie only runs on Windows".to_string())
+    }
+}
+
+/// One `ShellExecuteExW` call for the Sparxie program (the verb is the whole difference between the normal start
+/// and the UAC prompt). `SEE_MASK_NOASYNC` because Tauri commands run on threads without a message loop.
+#[cfg(target_os = "windows")]
+fn shell_execute_sparxie(
+    path: &std::path::Path,
+    verb: crate::sparxie_open::StartVerb,
+) -> Result<(), crate::sparxie_open::StartFailure> {
+    use crate::sparxie_open::{StartFailure, classify_failure, win32_error_from_hresult};
+    use ::windows::Win32::Foundation::HWND;
+    use ::windows::Win32::UI::Shell::{SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW};
+    use ::windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use ::windows::core::PCWSTR;
+
+    fn to_wide(value: &std::ffi::OsStr) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        value.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let operation = to_wide(std::ffi::OsStr::new(verb.as_str()));
+    let file = to_wide(path.as_os_str());
+    let directory = path.parent().map(|dir| to_wide(dir.as_os_str()));
+    let mut info = SHELLEXECUTEINFOW::default();
+    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    info.fMask = SEE_MASK_NOASYNC;
+    info.hwnd = HWND(std::ptr::null_mut());
+    info.lpVerb = PCWSTR(operation.as_ptr());
+    info.lpFile = PCWSTR(file.as_ptr());
+    info.lpDirectory = directory
+        .as_ref()
+        .map_or(PCWSTR::null(), |dir| PCWSTR(dir.as_ptr()));
+    info.nShow = SW_SHOWNORMAL.0;
+
+    match unsafe { ShellExecuteExW(&mut info) } {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let win32 = win32_error_from_hresult(error.code().0).unwrap_or(0);
+            Err(classify_failure(verb, win32, info.hInstApp.0 as isize))
+        }
     }
 }
 

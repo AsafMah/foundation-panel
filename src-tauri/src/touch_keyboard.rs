@@ -524,8 +524,8 @@ mod tests {
         fn logon_time(&mut self, _: u32) -> io::Result<Option<i64>> {
             Ok(Some(100))
         }
-        fn read(&mut self, _: u32) -> io::Result<u32> {
-            Ok(self.0)
+        fn read(&mut self, _: u32) -> io::Result<Option<u32>> {
+            Ok(Some(self.0))
         }
         fn publish(&mut self, _: u32, value: u32) -> io::Result<()> {
             self.0 = value;

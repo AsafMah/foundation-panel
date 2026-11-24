@@ -27,6 +27,7 @@
           <MItem icon="content_paste" :title="clipFirst.title" :value="clipFirst.text">
             <template #trail>
               <MChip :tone="clipView.tone">{{ clipView.label }}</MChip>
+              <MButton variant="text" size="sm" icon="settings" @click="emit('webui-navigate', CLIPBOARD_SYNC_SETTING_PATH)">{{ t.sidebar.openSetting }}</MButton>
               <MButton variant="tonal" icon="refresh" :loading="clipLoading" @click="refreshClipboard">{{ clipTexts.refresh }}</MButton>
             </template>
           </MItem>
@@ -57,7 +58,7 @@ import { setVisibleInterval, clearVisibleInterval } from '../../composables/page
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { MDiagnostics, MDialog, MButton, MChip, MItem, diagnosticsTexts, guideTexts, coachTexts, remoteTexts, MGroup, MSection, useDialogs, useNotify } from 'foundation-ui/vue'
-import { clipboardBundleFacts, clipboardStatusView } from '../../composables/clipboardStatusView.js'
+import { clipboardBundleFacts, clipboardStatusView, CLIPBOARD_SYNC_SETTING_PATH } from '../../composables/clipboardStatusView.js'
 import { useDiagnostics } from '../../composables/useDiagnostics.js'
 import { exportPanelLogs } from '../../composables/panelLogExport.js'
 import { useLogDiagnosis } from '../../composables/useLogDiagnosis.js'

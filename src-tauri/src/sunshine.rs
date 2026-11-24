@@ -15,6 +15,8 @@ pub struct SunshineConfig {
     pub resolutions: Option<String>,
     pub fps: Option<String>,
     pub locale: Option<String>,
+    /// Where a pairing request asks for its PIN: `fullscreen` or `panel` (pin_prompt.rs).
+    pub pin_prompt: Option<String>,
     pub client_fingerprint_remote_rules: Option<String>,
     pub client_fingerprint_rules_url: Option<String>,
     pub client_fingerprint_rules_refresh_hours: Option<String>,
@@ -379,6 +381,7 @@ fn parse_sunshine_config_content(content: &str) -> SunshineConfig {
                 "resolutions" => config.resolutions = Some(value.to_string()),
                 "fps" => config.fps = Some(value.to_string()),
                 "locale" => config.locale = Some(value.to_string()),
+                "pin_prompt" => config.pin_prompt = Some(value.to_string()),
                 "client_fingerprint_remote_rules" => {
                     config.client_fingerprint_remote_rules = Some(value.to_string())
                 }
@@ -920,6 +923,13 @@ mod tray_protocol_tests {
         );
 
         assert_eq!(config.locale.as_deref(), Some("zh_TW"));
+    }
+
+    #[test]
+    fn parses_where_a_pairing_request_asks_for_its_pin() {
+        let config = parse_sunshine_config_content("port = 47989\npin_prompt = panel\n# pin_prompt = fullscreen\n");
+        assert_eq!(config.pin_prompt.as_deref(), Some("panel"));
+        assert_eq!(parse_sunshine_config_content("locale = en\n").pin_prompt, None);
     }
 
     #[tokio::test]
